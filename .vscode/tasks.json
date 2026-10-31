@@ -1,0 +1,27 @@
+{
+    "version": "2.0.0",
+    "tasks": [
+        {
+            "type": "shell",
+            "label": "C.O.N.D.R.: Build Kernel",
+            "command": "make",
+            "group": {
+                "kind": "build",
+                "isDefault": true
+            },
+            "problemMatcher": ["$gcc"]
+        },
+        {
+            "type": "shell",
+            "label": "C.O.N.D.R.: Run in QEMU",
+            "command": "make run",
+            "problemMatcher": []
+        },
+        {
+            "type": "shell",
+            "label": "C.O.N.D.R.: Debug (QEMU + GDB server)",
+            "command": "make debug",
+            "problemMatcher": []
+        }
+    ]
+}

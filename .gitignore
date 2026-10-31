@@ -1,0 +1,9 @@
+/build/
+/limine/
+*.o
+*.d
+*.elf
+*.iso
+*.img
+.gdb_history
+*.log
