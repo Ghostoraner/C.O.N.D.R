@@ -1,5 +1,5 @@
 <p align="center">
-  <img src="docs/assets/condr-logo.svg" alt="C.O.N.D.R. — Command Operating Node Data Router" width="900">
+  <img src="docs/assets/condr-logo.jpg" alt="C.O.N.D.R. — Command Operating Node Data Router" width="900">
 </p>
 
 <p align="center">
