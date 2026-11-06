@@ -1,0 +1,33 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1400" height="700" viewBox="0 0 1400 700" role="img" aria-labelledby="title desc">
+  <title id="title">C.O.N.D.R. — Command Operating Node Data Router</title>
+  <desc id="desc">A bronze circuit-feather emblem and C.O.N.D.R. wordmark on a dark carbon-inspired background.</desc>
+  <defs>
+    <linearGradient id="bg" x2="0" y2="1"><stop stop-color="#111110"/><stop offset="1" stop-color="#050505"/></linearGradient>
+    <pattern id="weave" width="14" height="14" patternUnits="userSpaceOnUse" patternTransform="rotate(45)">
+      <path d="M0 0h7v14H0z" fill="#fff" opacity=".018"/><path d="M7 0h7v14H7z" fill="#000" opacity=".22"/>
+    </pattern>
+    <linearGradient id="gold" x1="0" y1="0" x2="1" y2="1"><stop stop-color="#fff0b0"/><stop offset=".38" stop-color="#d9a85d"/><stop offset=".72" stop-color="#8d552b"/><stop offset="1" stop-color="#f5cb78"/></linearGradient>
+    <linearGradient id="feather" x1="0" y1="0" x2=".8" y2="1"><stop stop-color="#59453a"/><stop offset=".48" stop-color="#211b18"/><stop offset="1" stop-color="#100e0d"/></linearGradient>
+    <filter id="glow" x="-50%" y="-50%" width="200%" height="200%"><feGaussianBlur stdDeviation="5" result="b"/><feMerge><feMergeNode in="b"/><feMergeNode in="SourceGraphic"/></feMerge></filter>
+    <filter id="shadow" x="-30%" y="-30%" width="160%" height="160%"><feGaussianBlur in="SourceAlpha" stdDeviation="9"/><feOffset dy="9"/><feComponentTransfer><feFuncA type="linear" slope=".65"/></feComponentTransfer><feMerge><feMergeNode/><feMergeNode in="SourceGraphic"/></feMerge></filter>
+  </defs>
+  <rect width="1400" height="700" rx="24" fill="url(#bg)"/><rect width="1400" height="700" rx="24" fill="url(#weave)"/>
+  <g filter="url(#shadow)" stroke-linejoin="round">
+    <path d="M377 356C454 251 533 188 681 172c99-11 147-45 183-89-6 81-43 132-116 160-67 26-125 24-192 42-69 19-118 45-179 109z" fill="url(#feather)" stroke="#76563d" stroke-width="4"/>
+    <path d="M445 356c104-70 213-112 355-142 120-26 197-59 254-134-12 94-66 141-158 167-92 26-193 27-288 53-62 17-111 34-163 56z" fill="url(#feather)" stroke="#9b7049" stroke-width="3"/>
+    <path d="M626 333c91-55 203-74 309-89 66-9 117-30 157-65-17 73-64 111-137 127-102 21-216 4-329 27z" fill="url(#feather)" stroke="#8c623f" stroke-width="3"/>
+    <path d="M613 351c89-25 190-17 276-8 64 7 110-2 151-26-31 60-77 82-142 81-91-1-187-38-285-47z" fill="url(#feather)" stroke="#785237" stroke-width="3"/>
+    <path d="M564 374c73-4 137 22 199 45 53 20 94 22 135 9-41 43-82 53-134 40-72-18-131-65-200-94z" fill="url(#feather)" stroke="#76563d" stroke-width="3"/>
+  </g>
+  <g fill="none" stroke="url(#gold)" stroke-width="3" stroke-linecap="round" stroke-linejoin="round" filter="url(#glow)">
+    <path d="M429 328l125-66 89-11 68-47 99-17 96-45"/><path d="M510 306l79-53 77-6 52-41 77-1 75-28"/>
+    <path d="M583 345l86-35 88 8 77-20 92 3"/><path d="M650 368l75 13 63-4 61 19"/>
+  </g>
+  <g fill="#ffda87" stroke="#fff0c0" stroke-width="2" filter="url(#glow)">
+    <circle cx="554" cy="262" r="7"/><circle cx="643" cy="251" r="7"/><circle cx="711" cy="204" r="7"/><circle cx="810" cy="187" r="7"/><circle cx="906" cy="142" r="7"/>
+    <circle cx="589" cy="253" r="6"/><circle cx="718" cy="261" r="6"/><circle cx="875" cy="264" r="6"/><circle cx="725" cy="381" r="6"/>
+  </g>
+  <text x="700" y="520" text-anchor="middle" font-family="Arial, Helvetica, sans-serif" font-size="105" font-weight="700" letter-spacing="7" fill="url(#gold)" stroke="#4a2d1d" stroke-width="2" paint-order="stroke">C.O.N.D.R.</text>
+  <path d="M235 550H1165" stroke="url(#gold)" stroke-width="2" opacity=".8"/><circle cx="235" cy="550" r="4" fill="#e6b66e"/><circle cx="1165" cy="550" r="4" fill="#e6b66e"/>
+  <text x="700" y="598" text-anchor="middle" font-family="Arial, Helvetica, sans-serif" font-size="27" font-weight="600" letter-spacing="5" fill="#d5a261">COMMAND · OPERATING · NODE · DATA · ROUTER</text>
+</svg>

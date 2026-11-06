@@ -1,3 +1,15 @@
+<p align="center">
+  <img src="docs/assets/condr-logo.svg" alt="C.O.N.D.R. — Command Operating Node Data Router" width="900">
+</p>
+
+<p align="center">
+  <a href="https://github.com/Ghostoraner/C.O.N.D.R"><img src="https://img.shields.io/badge/Project-experimental-orange?style=for-the-badge" alt="Experimental project"></a>
+  <img src="https://img.shields.io/badge/C%2B%2B-23-00599C?style=for-the-badge&logo=cplusplus&logoColor=white" alt="C++23">
+  <img src="https://img.shields.io/badge/Architecture-x86__64-555555?style=for-the-badge" alt="x86_64">
+  <img src="https://img.shields.io/badge/Boot-Limine-7c3aed?style=for-the-badge" alt="Limine">
+  <a href="LICENSE"><img src="https://img.shields.io/badge/License-MIT-green?style=for-the-badge" alt="MIT License"></a>
+</p>
+
 # C.O.N.D.R.
 
 **Command Operating Node Data Router** is an experimental 64-bit x86 operating
