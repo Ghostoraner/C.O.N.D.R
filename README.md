@@ -9,7 +9,7 @@
   <img src="https://img.shields.io/badge/Boot-Limine-7c3aed?style=for-the-badge" alt="Limine">
   <a href="LICENSE"><img src="https://img.shields.io/badge/License-MIT-green?style=for-the-badge" alt="MIT License"></a>
 </p>
-  [![Architecture diagram](https://gitdiagram.com/diagram-badge.svg)](https://gitdiagram.com/ghostoraner/c.o.n.d.r?utm_source=readme&utm_medium=badge)
+ 
   
 # C.O.N.D.R.
 
