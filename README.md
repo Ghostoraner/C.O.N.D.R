@@ -233,3 +233,5 @@ ID назначаются последовательно во время заг�
 
 Правила участия описаны в [CONTRIBUTING.md](CONTRIBUTING.md), а порядок
 сообщения об уязвимостях — в [SECURITY.md](SECURITY.md).
+
+[![Architecture diagram of ghostoraner/c.o.n.d.r](https://gitdiagram.com/ghostoraner/c.o.n.d.r/diagram.png)](https://gitdiagram.com/ghostoraner/c.o.n.d.r?utm_source=readme&utm_medium=picture)
