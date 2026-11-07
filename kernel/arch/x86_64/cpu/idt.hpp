@@ -14,6 +14,7 @@ namespace idt {
     using Handler = void (*)(Registers*);
     void init();
     void set_handler(u8 vector, Handler fn);
+    void allow_user(u8 vector);
 }
 
 }

@@ -1,5 +1,7 @@
 #include <arch/x86_64/cpu/idt.hpp>
 #include <arch/x86_64/cpu/pic.hpp>
+#include <arch/x86_64/cpu/scheduler.hpp>
+#include <arch/x86_64/cpu/syscall.hpp>
 #include <arch/x86_64/io.hpp>
 #include <lib/print.hpp>
 
@@ -39,21 +41,32 @@ static void dump(Registers* r) {
     }
 }
 
-extern "C" void isr_dispatch(Registers* r) {
+extern "C" Registers* isr_dispatch(Registers* r) {
     if (auto fn = idt::handler_for(static_cast<u8>(r->vector))) {
         fn(r);
-        if (r->vector < 32) return;
     }
 
     if (r->vector >= 32 && r->vector < 48) {
         pic::send_eoi(static_cast<u8>(r->vector - 32));
-        return;
+        return scheduler::schedule(r);
+    }
+    if (r->vector == 48) return scheduler::schedule(r);
+    if (r->vector == 0x80) {
+        syscall::dispatch(r);
+        return scheduler::schedule(r);
     }
     if (r->vector < 32) {
+        if (r->vector == 3 && idt::handler_for(3)) return r;
+        if ((r->cs & 3) == 3) {
+            kprintf("[user] task fault vector=%lu rip=%p\n", r->vector, (void*)r->rip);
+            scheduler::mark_current_exited();
+            return scheduler::schedule(r);
+        }
         dump(r);
         panic("unhandled CPU exception");
     }
     kprintf("[isr] unexpected interrupt %lu\n", r->vector);
+    return r;
 }
 
 }

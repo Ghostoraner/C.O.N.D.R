@@ -21,6 +21,7 @@ struct Event {
 
 void init();
 void handle_irq(Registers* registers);
+void set_waiter(u32 task_id);
 Event get_event();
 bool try_get_event(Event& event);
 char getc();

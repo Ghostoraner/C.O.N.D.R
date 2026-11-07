@@ -23,6 +23,7 @@ static inline void hlt()  { asm volatile("hlt"); }
 
 static inline u64 read_cr2() { u64 v; asm volatile("mov %%cr2, %0" : "=r"(v)); return v; }
 static inline u64 read_cr3() { u64 v; asm volatile("mov %%cr3, %0" : "=r"(v)); return v; }
+static inline void write_cr3(u64 v) { asm volatile("mov %0, %%cr3" :: "r"(v) : "memory"); }
 
 static inline u64 rdmsr(u32 msr) {
     u32 lo, hi;

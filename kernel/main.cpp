@@ -11,9 +11,13 @@
 #include <drivers/video/framebuffer.hpp>
 #include <mm/pmm.hpp>
 #include <mm/heap.hpp>
+#include <mm/address_space.hpp>
+#include <mm/elf_loader.hpp>
 #include <lib/print.hpp>
 #include <shell/custom_shell.hpp>
 #include <fs/nvmfs.hpp>
+#include <ipc/ipc.hpp>
+#include <storage/persistence.hpp>
 
 using namespace nord;
 
@@ -24,10 +28,7 @@ static void shell_task() {
 }
 
 static void worker_task() {
-    for (;;) {
-        __atomic_add_fetch(&g_worker_iterations, 1, __ATOMIC_RELAXED);
-        arch::scheduler::yield();
-    }
+    for (;;) __atomic_add_fetch(&g_worker_iterations, 1, __ATOMIC_RELAXED);
 }
 
 namespace {
@@ -87,10 +88,12 @@ extern "C" [[noreturn]] void kernel_main() {
     arch::idt::init();
     arch::pic::init();
     arch::idt::set_handler(3, on_breakpoint);
+    arch::idt::allow_user(0x80);
 
     mm::pmm::init(g_memmap.response, g_hhdm.response->offset);
     mm::heap::init();
     nvmfs::init();
+    ipc::init();
 
     if (g_fb.response && g_fb.response->framebuffer_count > 0) {
         if (video::init(g_fb.response->framebuffers[0])) {
@@ -107,14 +110,32 @@ extern "C" [[noreturn]] void kernel_main() {
     arch::pic::unmask(0);
     arch::pic::unmask(1);
     arch::sti();
+    storage::persistence::init();
 
     test_subsystems();
 
     arch::scheduler::init();
     u32 shell_id;
     u32 worker_id;
+    u32 user_id;
     if (!arch::scheduler::create("shell", shell_task, shell_id)) panic("scheduler: cannot create shell task");
     if (!arch::scheduler::create("worker", worker_task, worker_id)) panic("scheduler: cannot create worker task");
+
+    mm::address_space::AddressSpace user_space{};
+    if (!mm::address_space::create(user_space)) panic("vm: user PML4 slot unavailable");
+    kprintf("[vm] user PML4 slot=%u base=%p\n", user_space.pml4_index,
+            reinterpret_cast<void*>(user_space.user_base));
+    u64 user_entry;
+    u64 user_stack;
+    if (!mm::elf_loader::load_demo(user_space, user_entry, user_stack)) {
+        mm::address_space::destroy(user_space);
+        panic("elf: failed to load user demo");
+    }
+    if (!arch::scheduler::create_user("user-elf", user_space, user_entry, user_stack, user_id)) {
+        mm::address_space::destroy(user_space);
+        panic("scheduler: cannot create user task");
+    }
+    arch::keyboard::set_waiter(shell_id);
     kprintf("\n[boot] initialization complete. Starting scheduler.\n");
     arch::scheduler::run();
 }

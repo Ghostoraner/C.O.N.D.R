@@ -43,10 +43,12 @@ LDFLAGS  := \
 CXX_SRC := $(shell find kernel -name '*.cpp')
 ASM_SRC := $(shell find kernel -name '*.asm')
 FONT_SRC := kernel/drivers/video/font12x22.bin
-OBJ     := $(CXX_SRC:%.cpp=$(BUILD)/%.o) $(ASM_SRC:%.asm=$(BUILD)/%.o) $(BUILD)/$(FONT_SRC).o
+USER_ELF := $(BUILD)/user/demo.elf
+USER_OBJ := $(BUILD)/user/demo.elf.o
+OBJ     := $(CXX_SRC:%.cpp=$(BUILD)/%.o) $(ASM_SRC:%.asm=$(BUILD)/%.o) $(BUILD)/$(FONT_SRC).o $(USER_OBJ)
 DEPS    := $(CXX_SRC:%.cpp=$(BUILD)/%.d)
 
-.PHONY: all kernel iso usb-iso run debug clean distclean limine
+.PHONY: all kernel iso usb-iso run debug test clean distclean limine
 
 all: kernel
 
@@ -71,6 +73,14 @@ $(BUILD)/%.bin.o: %.bin
 	@mkdir -p $(dir $@)
 	@$(LD) -r -b binary -o $@ $<
 	@echo "  BIN   $<"
+
+$(USER_ELF): $(BUILD)/user/demo.o user/linker.ld
+	@mkdir -p $(dir $@)
+	$(LD) -nostdlib -static -T user/linker.ld -o $@ $<
+
+$(USER_OBJ): $(USER_ELF)
+	@mkdir -p $(dir $@)
+	$(LD) -r -b binary -o $@ $<
 
 -include $(DEPS)
 
@@ -108,6 +118,9 @@ run: iso
 
 debug: iso
 	./scripts/run-qemu.sh $(ISO) -s -S
+
+test: iso
+	python3 scripts/test-qemu.py $(ISO)
 
 clean:
 	rm -rf $(BUILD)

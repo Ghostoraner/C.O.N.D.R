@@ -5,9 +5,12 @@
 #include <arch/x86_64/io.hpp>
 #include <drivers/video/framebuffer.hpp>
 #include <fs/nvmfs.hpp>
+#include <ipc/ipc.hpp>
 #include <lib/print.hpp>
 #include <lib/string.hpp>
 #include <mm/heap.hpp>
+#include <storage/persistence.hpp>
+#include <test/test.hpp>
 #include <nord/types.hpp>
 
 namespace nord::shell {
@@ -318,6 +321,25 @@ static void execute(const char* input) {
         nvmfs::Error failure;
         if (nvmfs::selftest(checks, failure)) kprintf("NVMFS check: %u passed\n", checks);
         else error("check", failure);
+        return;
+    }
+    if (equal(command, "test")) {
+        u32 checks;
+        nord::ipc::Error ipc_failure;
+        nord::nvmfs::Error nvmfs_failure;
+        if (nord::test::TestSuite::run_all()) {
+            kprintf("[test] All tests passed!\n");
+        } else {
+            kprintf("[test] Some tests failed.\n");
+        }
+        return;
+    }
+    if (equal(command, "memtest")) {
+        kprintf("[memtest] Not fully implemented yet.\n");
+        return;
+    }
+    if (equal(command, "storagetest")) {
+        kprintf("[storage] Not fully implemented yet.\n");
         return;
     }
     if (equal(command, "ver")) { kprintf("C.O.N.D.R. 0.1-dev x86_64\n"); return; }

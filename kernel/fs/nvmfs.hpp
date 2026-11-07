@@ -3,13 +3,14 @@
 
 namespace nord::nvmfs {
 
-using NodeId = u64;
+using NodeId = u32;
 
 enum class NodeType : u8 {
     file,
     directory,
     vault,
     device,
+    service,
     process,
 };
 
@@ -36,6 +37,8 @@ struct Node {
     NodeId container_id;
     NodeType type;
     bool active;
+    u32 owner;
+    u8 rights;
     char name[48];
     FileStream stream;
 };
@@ -57,7 +60,20 @@ struct Directory {
     NodeId container_id;
 };
 
+enum class Right : u8 {
+    none     = 0,
+    read     = 1 << 0,
+    write    = 1 << 1,
+    connect  = 1 << 2,
+    accept   = 1 << 3,
+    owner    = 1 << 4,
+    all      = 0x1F,
+};
+
+using ChangeHook = void (*)();
+
 void init();
+void set_change_hook(ChangeHook hook);
 bool create(NodeType type, const char* name, NodeId container_id,
             NodeId& result, Error& error);
 Node* find(NodeId id);
@@ -77,6 +93,13 @@ bool parse_type(const char* text, NodeType& type);
 const char* error_text(Error error);
 void stats(u64& nodes, u64& tags, u64& stream_bytes, u64& stream_limit);
 
+bool set_owner(NodeId id, u32 owner, Error& error);
+bool set_rights(NodeId id, u8 rights, Error& error);
+bool check_rights(NodeId id, u8 required, bool& has);
+u8 rights_of(NodeId id);
+
 bool selftest(u32& checks, Error& error);
+bool serialize(void* output, usize capacity, usize& size);
+bool deserialize(const void* input, usize size);
 
 }

@@ -1,6 +1,11 @@
 bits 64
 section .text
 extern isr_dispatch
+global isr_yield
+
+isr_yield:
+    int 0x30
+    ret
 
 %macro ISR_NOERR 1
 global isr%1
@@ -69,7 +74,9 @@ isr_common:
     push r15
 
     mov rdi, rsp
+    and rsp, -16
     call isr_dispatch
+    mov rsp, rax
 
     pop r15
     pop r14

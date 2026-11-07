@@ -16,13 +16,16 @@ static u8 g_tail = 0;
 
 static char translate(u8 code, bool shifted);
 
-static void enqueue(Event event) {
+static bool enqueue(Event event) {
     const u8 head = __atomic_load_n(&g_head, __ATOMIC_RELAXED);
     const u8 next = static_cast<u8>((head + 1) & 63);
-    if (next == __atomic_load_n(&g_tail, __ATOMIC_ACQUIRE)) return;
+    if (next == __atomic_load_n(&g_tail, __ATOMIC_ACQUIRE)) return false;
     g_events[head] = event;
     __atomic_store_n(&g_head, next, __ATOMIC_RELEASE);
+    return true;
 }
+
+static u32 g_waiter_id;
 
 static bool decode(u8 scan, Event& event) {
     if (scan == 0xE0 || scan == 0xE1) {
@@ -68,8 +71,12 @@ static bool decode(u8 scan, Event& event) {
 void handle_irq(Registers*) {
     while (inb(STATUS_PORT) & 0x01) {
         Event event{};
-        if (decode(inb(DATA_PORT), event)) enqueue(event);
+        if (decode(inb(DATA_PORT), event) && enqueue(event)) scheduler::wake(g_waiter_id);
     }
+}
+
+void set_waiter(u32 task_id) {
+    g_waiter_id = task_id;
 }
 
 void init() {
@@ -81,6 +88,7 @@ void init() {
     g_extended = false;
     g_head = 0;
     g_tail = 0;
+    g_waiter_id = 0;
 }
 
 static char translate(u8 code, bool shifted) {
@@ -141,8 +149,7 @@ bool try_get_event(Event& event) {
 Event get_event() {
     Event event{};
     while (!try_get_event(event)) {
-        scheduler::yield();
-        hlt();
+        scheduler::block_current();
     }
     return event;
 }

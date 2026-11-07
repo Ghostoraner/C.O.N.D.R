@@ -39,6 +39,7 @@ static void set_gate(u8 vector, u64 handler, u8 type_attr) {
 }
 
 void set_handler(u8 vector, Handler fn) { g_handlers[vector] = fn; }
+void allow_user(u8 vector) { set_gate(vector, isr_stub_table[vector], 0xEE); }
 
 void init() {
     memset(g_idt, 0, sizeof(g_idt));

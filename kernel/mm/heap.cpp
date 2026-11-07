@@ -1,9 +1,15 @@
 #include <mm/heap.hpp>
 #include <mm/pmm.hpp>
+#include <arch/x86_64/cpu/scheduler.hpp>
 #include <lib/print.hpp>
 #include <lib/string.hpp>
 
 namespace nord::mm::heap {
+
+struct PreemptionGuard {
+    PreemptionGuard() { arch::scheduler::preempt_disable(); }
+    ~PreemptionGuard() { arch::scheduler::preempt_enable(); }
+};
 
 struct Block {
     u64    size;
@@ -45,6 +51,7 @@ static Block* grow(u64 need) {
 }
 
 void init() {
+    PreemptionGuard guard;
     if (!grow(GROW_PAGES * PAGE_SIZE)) panic("heap: failed to allocate initial pool");
     kprintf("[heap] initialized, %lu KiB\n", g_capacity / 1024);
 }
@@ -62,6 +69,7 @@ static void split(Block* b, u64 size) {
 }
 
 void* kmalloc(usize size) {
+    PreemptionGuard guard;
     if (size == 0) return nullptr;
     size = align_up(size, 16);
 
@@ -106,6 +114,7 @@ static void coalesce(Block* b) {
 }
 
 void kfree(void* ptr) {
+    PreemptionGuard guard;
     if (!ptr) return;
     auto* b = reinterpret_cast<Block*>(static_cast<u8*>(ptr) - HEADER);
     if (b->free) panic("heap: double free at %p", ptr);
@@ -115,6 +124,7 @@ void kfree(void* ptr) {
 }
 
 void* krealloc(void* ptr, usize size) {
+    PreemptionGuard guard;
     if (!ptr) return kmalloc(size);
     if (size == 0) { kfree(ptr); return nullptr; }
 
@@ -128,7 +138,11 @@ void* krealloc(void* ptr, usize size) {
     return np;
 }
 
-void stats(u64& used, u64& capacity) { used = g_used; capacity = g_capacity; }
+void stats(u64& used, u64& capacity) {
+    PreemptionGuard guard;
+    used = g_used;
+    capacity = g_capacity;
+}
 
 }
 
