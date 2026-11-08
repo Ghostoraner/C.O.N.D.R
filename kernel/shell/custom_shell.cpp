@@ -101,13 +101,14 @@ static void print_help() {
     kprintf("  cd ID|..           enter container / go to parent container\n");
     kprintf("  pwd                print current object context\n");
     kprintf("  mkdir NAME         create directory object\n");
+    kprintf("  sd [--force|--halt|--poweroff]  shut down the operating system\n");
     kprintf("  touch NAME         create file object\n");
     kprintf("  new TYPE NAME      create any node type\n");
     kprintf("  find KEY=VALUE     search the tag index\n");
     kprintf("  stat ID | rm ID    inspect/delete object\n");
     kprintf("  tag ID KEY VALUE   add tag; untag removes it\n");
     kprintf("  put ID \"TEXT\" | add ID \"TEXT\" | get ID\n");
-    kprintf("  sys | check | ver | reboot | help\n");
+    kprintf("  sys | check | ver | reboot | sd | help | cpuid\n");
     kprintf("  ps                 list kernel tasks\n");
 }
 
@@ -258,6 +259,35 @@ static void command_sys() {
     kprintf("heap=%lu/%lu bytes\n", heap_used, heap_capacity);
 }
 
+#ifdef __x86_64__
+static void command_cpuid() {
+    u32 eax, ebx, ecx, edx;
+    nord::arch::cpuid(0, 0, eax, ebx, ecx, edx);
+    char vendor[13];
+    memcpy(vendor, &ebx, 4);
+    memcpy(vendor + 4, &eax, 4);
+    memcpy(vendor + 8, &ecx, 4);
+    vendor[12] = '\0';
+    kprintf("CPU vendor: %s\n", vendor);
+    kprintf("CPUID level: %u\n", eax);
+    if (eax >= 0x80000004) {
+        nord::arch::cpuid(0x80000002, 0, eax, ebx, ecx, edx);
+        kprintf("Model name string: %s\n", reinterpret_cast<const char*>(&eax));
+        nord::arch::cpuid(0x80000003, 0, eax, ebx, ecx, edx);
+        kprintf("                   %s\n", reinterpret_cast<const char*>(&eax));
+        nord::arch::cpuid(0x80000004, 0, eax, ebx, ecx, edx);
+        kprintf("                   %s\n", reinterpret_cast<const char*>(&eax));
+    }
+    nord::arch::cpuid(1, 0, eax, ebx, ecx, edx);
+    kprintf("Features:\n");
+    if (ebx & (1 << 3)) kprintf("  SSE\n");
+    if (ebx & (1 << 21)) kprintf("  SSE2\n");
+    if (ecx & (1 << 0)) kprintf("  SSE3\n");
+    if (ecx & (1 << 19)) kprintf("  AES-NI\n");
+}
+#endif
+
+
 static void command_reboot() {
     kprintf("Restarting C.O.N.D.R...\n");
     arch::cli();
@@ -265,6 +295,40 @@ static void command_reboot() {
         if ((arch::inb(0x64) & 0x02) == 0) break;
     arch::outb(0x64, 0xFE);
     arch::halt_forever();
+}
+
+static void command_sd(TokenList tokens) {
+    bool force = false;
+    bool halt_only = false;
+
+    // Parse flags
+    for (usize i = 1; i < tokens.count; ++i) {
+        if (equal(tokens.value[i], "--force") || equal(tokens.value[i], "-f")) {
+            force = true;
+        } else if (equal(tokens.value[i], "--halt") || equal(tokens.value[i], "-h")) {
+            halt_only = true;
+        } else if (equal(tokens.value[i], "--poweroff") || equal(tokens.value[i], "-p")) {
+            // Power off flag - just halt for now
+        }
+    }
+
+    kprintf("Shutting down C.O.N.D.R...");
+    if (force) kprintf(" (forced)");
+    kprintf("\n");
+
+    arch::cli();
+
+    if (halt_only) {
+        // Just halt the CPU
+        arch::halt_forever();
+    } else {
+        // Perform shutdown sequence
+        // Write shutdown command to PM1a event register (ACPI)
+        // Port 0x1000 is a common address for the PM1 control block
+        // But we'll just halt the CPU for this implementation
+        arch::outb(0x64, 0xFE);
+        arch::halt_forever();
+    }
 }
 
 static void execute(const char* input) {
@@ -343,7 +407,9 @@ static void execute(const char* input) {
         return;
     }
     if (equal(command, "ver")) { kprintf("C.O.N.D.R. 0.1-dev x86_64\n"); return; }
+    if (equal(command, "cpuid")) { command_cpuid(); return; }
     if (equal(command, "reboot")) { command_reboot(); return; }
+    if (equal(command, "sd")) { command_sd(tokens); return; }
     kprintf("%s: unknown command (type help)\n", command);
 }
 

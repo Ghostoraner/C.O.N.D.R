@@ -33,5 +33,15 @@ static inline u64 rdmsr(u32 msr) {
 static inline void wrmsr(u32 msr, u64 val) {
     asm volatile("wrmsr" :: "c"(msr), "a"(static_cast<u32>(val)), "d"(static_cast<u32>(val >> 32)));
 }
+static inline u32 cpuid_count(u32 eax, u32 ecx) {
+    u32 lo, hi;
+    asm volatile("cpuid" : "=a"(lo), "=d"(hi) : "a"(eax), "c"(ecx));
+    return lo;
+}
+static inline void cpuid(u32 eax, u32 ecx, u32& eax_out, u32& ebx_out, u32& ecx_out, u32& edx_out) {
+    asm volatile("cpuid"
+        : "=a"(eax_out), "=b"(ebx_out), "=c"(ecx_out), "=d"(edx_out)
+        : "a"(eax), "c"(ecx));
+}
 
 }
