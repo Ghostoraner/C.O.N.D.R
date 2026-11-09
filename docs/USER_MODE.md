@@ -29,6 +29,7 @@ User programs invoke `int 0x80` with the syscall number in `RAX`:
 | `5` | `service_accept` | `RDI` listener handle | connected endpoint handle, or `-11` |
 | `6` | `ipc_send` | `RDI` handle, `RSI` data, `RDX` length (0-64) | bytes sent, or negative error |
 | `7` | `ipc_receive` | `RDI` handle, `RSI` output buffer, `RDX` capacity (at least 64) | message length, or `-11` |
+| `8` | `read_char` | `RDI` user buffer pointer, `RSI` capacity (1-256) | `1` byte written, `-1` invalid pointer/capacity, `-11` no waiter available |
 
 The kernel validates user ranges by walking the current address space before
 copying data. Service names are indexed in NVMFS, while IPC handles are bound to
@@ -37,3 +38,14 @@ eight messages. The demo connects to its own `echo` service to exercise the
 request/reply path. There are no file or memory-management syscalls. Page-table
 mappings currently do not enforce NX, and this code is not a security boundary
 suitable for untrusted software.
+
+## Keyboard input
+
+`read_char` (syscall 8) blocks the caller until a typed character is available,
+then writes exactly one byte to the user buffer and returns `1`. Arrow keys,
+Home/End and Delete events are discarded; only `Key::character` events are
+returned. Only one reader task is supported at a time: the reader registers
+itself as the keyboard waiter before blocking, so a keypress wakes the right
+task and a wakeup can never be lost even if the interrupt arrives between the
+queue check and the sleep. Events dropped because the ring buffer overflowed are
+counted and shown by the `sys` shell command.

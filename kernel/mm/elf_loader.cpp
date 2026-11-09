@@ -45,14 +45,17 @@ struct [[gnu::packed]] ProgramHeader {
 
 extern "C" const u8 _binary_build_user_demo_elf_start[];
 extern "C" const u8 _binary_build_user_demo_elf_end[];
+extern "C" const u8 _binary_build_user_kbd_demo_elf_start[];
+extern "C" const u8 _binary_build_user_kbd_demo_elf_end[];
 
 static bool fits(u64 offset, u64 length, u64 total) {
     return offset <= total && length <= total - offset;
 }
 
-bool load_demo(address_space::AddressSpace& space, u64& entry, u64& stack_pointer) {
-    const u8* image = _binary_build_user_demo_elf_start;
-    const u64 image_size = _binary_build_user_demo_elf_end - image;
+namespace {
+bool load_image(const u8* image, const u8* image_end,
+                address_space::AddressSpace& space, u64& entry, u64& stack_pointer) {
+    const u64 image_size = image_end - image;
     if (image_size < sizeof(ElfHeader)) return false;
 
     const auto* header = reinterpret_cast<const ElfHeader*>(image);
@@ -100,5 +103,16 @@ bool load_demo(address_space::AddressSpace& space, u64& entry, u64& stack_pointe
     stack_pointer = stack_top;
     return true;
 }
+} // namespace
 
+bool load_demo(address_space::AddressSpace& space, u64& entry, u64& stack_pointer) {
+    return load_image(_binary_build_user_demo_elf_start, _binary_build_user_demo_elf_end,
+                      space, entry, stack_pointer);
 }
+
+bool load_kbd_demo(address_space::AddressSpace& space, u64& entry, u64& stack_pointer) {
+    return load_image(_binary_build_user_kbd_demo_elf_start, _binary_build_user_kbd_demo_elf_end,
+                      space, entry, stack_pointer);
+}
+
+} // namespace nord::mm::elf_loader

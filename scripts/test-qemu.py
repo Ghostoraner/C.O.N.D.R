@@ -56,6 +56,12 @@ def send_line(monitor, line):
     monitor_command(monitor, "sendkey ret 35")
 
 
+def send_keys(monitor, keys):
+    for character in keys:
+        monitor_command(monitor, f"sendkey {character} 35")
+        time.sleep(0.05)
+
+
 def start_qemu(iso, disk, serial_path, monitor_path):
     command = [
         QEMU, "-M", "q35", "-m", "512M", "-smp", "1",
@@ -119,6 +125,13 @@ def main():
         process, monitor = start_qemu(iso, disk, log, monitor_path)
         try:
             wait_for_log(process, log, "C.O.N.D.R user-mode IPC: pong")
+            wait_for_log(process, log, "kbd-demo: ready")
+
+            # Syscall 8 coverage: the kbd-demo user task reads five characters
+            # one at a time and echoes each of them back.
+            send_keys(monitor, "hello")
+            wait_for_log(process, log, "kbd-demo: done")
+
             wait_for_log(process, log, "condr:/# ")
             send_line(monitor, "touch persisted")
             text = wait_for_log(process, log, "created: ")

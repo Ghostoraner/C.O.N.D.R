@@ -117,7 +117,25 @@ extern "C" [[noreturn]] void kernel_main() {
     arch::scheduler::init();
     u32 shell_id;
     u32 worker_id;
+    u32 kbd_id;
     u32 user_id;
+
+    // The keyboard-reader demo is created before the shell so that it becomes
+    // the single keyboard waiter first. The shell registers itself as waiter
+    // lazily inside get_event() once the reader has relinquished the slot.
+    mm::address_space::AddressSpace kbd_space{};
+    if (!mm::address_space::create(kbd_space)) panic("vm: user PML4 slot unavailable");
+    u64 kbd_entry;
+    u64 kbd_stack;
+    if (!mm::elf_loader::load_kbd_demo(kbd_space, kbd_entry, kbd_stack)) {
+        mm::address_space::destroy(kbd_space);
+        panic("elf: failed to load kbd demo");
+    }
+    if (!arch::scheduler::create_user("kbd-demo", kbd_space, kbd_entry, kbd_stack, kbd_id)) {
+        mm::address_space::destroy(kbd_space);
+        panic("scheduler: cannot create kbd demo task");
+    }
+
     if (!arch::scheduler::create("shell", shell_task, shell_id)) panic("scheduler: cannot create shell task");
     if (!arch::scheduler::create("worker", worker_task, worker_id)) panic("scheduler: cannot create worker task");
 
@@ -135,7 +153,6 @@ extern "C" [[noreturn]] void kernel_main() {
         mm::address_space::destroy(user_space);
         panic("scheduler: cannot create user task");
     }
-    arch::keyboard::set_waiter(shell_id);
     kprintf("\n[boot] initialization complete. Starting scheduler.\n");
     arch::scheduler::run();
 }

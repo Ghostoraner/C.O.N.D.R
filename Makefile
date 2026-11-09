@@ -26,26 +26,32 @@ LIMINE_DIR := limine
 LIMINE_BIN := $(LIMINE_DIR)/limine
 
 CXXFLAGS := \
-  -std=c++23 -O2 -g \
-  -ffreestanding -fno-exceptions -fno-rtti -fno-stack-protector \
+	-std=c++23 -O2 -g \
+	-ffreestanding -fno-exceptions -fno-rtti -fno-stack-protector \
 	-fno-stack-check -fno-PIC -fno-pie -fno-lto \
-  -mno-red-zone -mcmodel=kernel \
-  -mno-80387 -mno-mmx -mno-sse -mno-sse2 \
-  -Wall -Wextra -Wno-unused-parameter \
-  -Ikernel -Ikernel/include
+	-mno-red-zone -mcmodel=kernel \
+	-mno-80387 -mno-mmx -mno-sse -mno-sse2 \
+	-Wall -Wextra -Wno-unused-parameter \
+	-Ikernel -Ikernel/include
 
 ASFLAGS  := -f elf64 -g -F dwarf
 
 LDFLAGS  := \
-  -nostdlib -static -z max-page-size=0x1000 \
-  -T kernel/linker.ld
+	-nostdlib -static -z max-page-size=0x1000 \
+	-T kernel/linker.ld
+
+# Flags for user-mode ELF images. noexecstack marks the GNU stack
+# non-executable, so no objcopy post-processing is needed.
+USER_LDFLAGS := -nostdlib -static -z noexecstack -T user/linker.ld
 
 CXX_SRC := $(shell find kernel -name '*.cpp')
 ASM_SRC := $(shell find kernel -name '*.asm')
 FONT_SRC := kernel/drivers/video/font12x22.bin
 USER_ELF := $(BUILD)/user/demo.elf
 USER_OBJ := $(BUILD)/user/demo.elf.o
-OBJ     := $(CXX_SRC:%.cpp=$(BUILD)/%.o) $(ASM_SRC:%.asm=$(BUILD)/%.o) $(BUILD)/$(FONT_SRC).o $(USER_OBJ)
+KBD_ELF := $(BUILD)/user/kbd_demo.elf
+KBD_OBJ := $(BUILD)/user/kbd_demo.elf.o
+OBJ     := $(CXX_SRC:%.cpp=$(BUILD)/%.o) $(ASM_SRC:%.asm=$(BUILD)/%.o) $(BUILD)/$(FONT_SRC).o $(USER_OBJ) $(KBD_OBJ)
 DEPS    := $(CXX_SRC:%.cpp=$(BUILD)/%.d)
 
 .PHONY: all kernel iso usb-iso run debug test clean distclean limine
@@ -64,6 +70,7 @@ $(BUILD)/%.o: %.cpp
 	@$(CXX) $(CXXFLAGS) -MMD -MP -c $< -o $@
 	@echo "  CXX   $<"
 
+# Also builds user/*.asm into build/user/*.o
 $(BUILD)/%.o: %.asm
 	@mkdir -p $(dir $@)
 	@$(AS) $(ASFLAGS) $< -o $@
@@ -76,9 +83,17 @@ $(BUILD)/%.bin.o: %.bin
 
 $(USER_ELF): $(BUILD)/user/demo.o user/linker.ld
 	@mkdir -p $(dir $@)
-	$(LD) -nostdlib -static -T user/linker.ld -o $@ $<
+	$(LD) $(USER_LDFLAGS) -o $@ $<
 
 $(USER_OBJ): $(USER_ELF)
+	@mkdir -p $(dir $@)
+	$(LD) -r -b binary -o $@ $<
+
+$(KBD_ELF): $(BUILD)/user/kbd_demo.o user/linker.ld
+	@mkdir -p $(dir $@)
+	$(LD) $(USER_LDFLAGS) -o $@ $<
+
+$(KBD_OBJ): $(KBD_ELF)
 	@mkdir -p $(dir $@)
 	$(LD) -r -b binary -o $@ $<
 
@@ -86,7 +101,7 @@ $(USER_OBJ): $(USER_ELF)
 
 $(LIMINE_BIN):
 	git clone https://github.com/limine-bootloader/limine.git \
-	    --branch=v8.x-binary --depth=1 $(LIMINE_DIR)
+		--branch=v8.x-binary --depth=1 $(LIMINE_DIR)
 	$(MAKE) -C $(LIMINE_DIR)
 
 limine: $(LIMINE_BIN)
@@ -98,7 +113,7 @@ iso: $(KERNEL) $(LIMINE_BIN)
 	cp $(KERNEL) $(BUILD)/iso_root/boot/condr.elf
 	cp boot/limine.conf $(BUILD)/iso_root/boot/limine/limine.conf
 	cp $(LIMINE_DIR)/limine-bios.sys $(LIMINE_DIR)/limine-bios-cd.bin \
-	   $(LIMINE_DIR)/limine-uefi-cd.bin $(BUILD)/iso_root/boot/limine/
+		$(LIMINE_DIR)/limine-uefi-cd.bin $(BUILD)/iso_root/boot/limine/
 	cp $(LIMINE_DIR)/BOOTX64.EFI $(BUILD)/iso_root/EFI/BOOT/
 	$(ISO_TOOL) $(ISO_ARGS) -o $(ISO) $(BUILD)/iso_root
 	$(LIMINE_BIN) bios-install $(ISO)

@@ -4,5 +4,6 @@
 namespace nord::mm::elf_loader {
 
 bool load_demo(address_space::AddressSpace& space, u64& entry, u64& stack_pointer);
+bool load_kbd_demo(address_space::AddressSpace& space, u64& entry, u64& stack_pointer);
 
 }

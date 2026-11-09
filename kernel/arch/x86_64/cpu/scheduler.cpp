@@ -1,5 +1,6 @@
 #include <arch/x86_64/cpu/scheduler.hpp>
 #include <arch/x86_64/cpu/gdt.hpp>
+#include <arch/x86_64/dev/keyboard.hpp>
 #include <arch/x86_64/io.hpp>
 #include <ipc/ipc.hpp>
 #include <lib/string.hpp>
@@ -98,6 +99,9 @@ static void reap_retired_task() {
     if (!g_retired_task) return;
     Task* task = g_retired_task;
     ipc::close_task(task->id);
+    // A task that exited while blocked in a keyboard read must not leave a
+    // stale waiter registration behind.
+    keyboard::clear_waiter(task->id);
     if (task->user_mode) mm::address_space::destroy(task->space);
     if (task->stack) mm::heap::kfree(task->stack);
     memset(task, 0, sizeof(*task));
@@ -210,7 +214,10 @@ void wake(u32 id) {
 }
 
 void mark_current_exited() {
-    if (g_current) g_current->state = State::exited;
+    if (g_current) {
+        keyboard::clear_waiter(g_current->id);
+        g_current->state = State::exited;
+    }
 }
 
 [[noreturn]] void exit_current() {

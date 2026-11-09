@@ -377,6 +377,7 @@ const char* error_text(Error error) {
     case Error::queue_full: return "IPC queue full";
     case Error::permission_denied: return "capability denied";
     case Error::message_too_large: return "message exceeds 64 bytes";
+    case Error::already_exists: return "already exists";
     }
     return "unknown IPC error";
 }

@@ -1,5 +1,6 @@
 #include <arch/x86_64/cpu/syscall.hpp>
 #include <arch/x86_64/cpu/scheduler.hpp>
+#include <arch/x86_64/dev/keyboard.hpp>
 #include <fs/nvmfs.hpp>
 #include <ipc/ipc.hpp>
 #include <lib/print.hpp>
@@ -14,7 +15,9 @@ static constexpr u64 SYS_SERVICE_CONNECT = 4;
 static constexpr u64 SYS_SERVICE_ACCEPT = 5;
 static constexpr u64 SYS_IPC_SEND = 6;
 static constexpr u64 SYS_IPC_RECEIVE = 7;
+static constexpr u64 SYS_READ_CHAR = 8;
 static constexpr usize MAX_WRITE_SIZE = 256;
+static constexpr usize MAX_READ_CHAR_SIZE = 256;
 static constexpr usize MAX_SERVICE_NAME = 24;
 
 static bool read_service_name(mm::address_space::AddressSpace* space,
@@ -107,6 +110,29 @@ void dispatch(Registers* registers) {
             return;
         }
         registers->rax = message.size;
+        return;
+    }
+    if (registers->rax == SYS_READ_CHAR) {
+        auto* space = scheduler::current_address_space();
+        const usize capacity = registers->rsi;
+        char scratch = 0;
+        // Validate the user pointer up front: an invalid buffer fails
+        // immediately instead of blocking on it.
+        if (!space || capacity < 1 || capacity > MAX_READ_CHAR_SIZE
+            || !mm::address_space::copy_to_user(*space, registers->rdi, &scratch, 1)) {
+            registers->rax = static_cast<u64>(-1);
+            return;
+        }
+        char character = 0;
+        if (!keyboard::getc_blocking(character)) {
+            registers->rax = static_cast<u64>(-11);
+            return;
+        }
+        if (!mm::address_space::copy_to_user(*space, registers->rdi, &character, 1)) {
+            registers->rax = static_cast<u64>(-1);
+            return;
+        }
+        registers->rax = 1;
         return;
     }
     registers->rax = static_cast<u64>(-38);

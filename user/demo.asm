@@ -99,3 +99,5 @@ response_end:
 success_message: db "C.O.N.D.R user-mode IPC: "
 success_message_end:
 newline: db 10
+
+section .note.GNU-stack

@@ -257,6 +257,7 @@ static void command_sys() {
     kprintf("timer_ticks=%lu uptime=%lu s\n", arch::timer::ticks(), arch::timer::ticks() / 100);
     kprintf("NVMFS nodes=%lu tags=%lu streams=%lu/%lu bytes\n", nodes, tags, streams, stream_limit);
     kprintf("heap=%lu/%lu bytes\n", heap_used, heap_capacity);
+    kprintf("keyboard dropped=%lu\n", arch::keyboard::dropped_events());
 }
 
 #ifdef __x86_64__
@@ -388,9 +389,6 @@ static void execute(const char* input) {
         return;
     }
     if (equal(command, "test")) {
-        u32 checks;
-        nord::ipc::Error ipc_failure;
-        nord::nvmfs::Error nvmfs_failure;
         if (nord::test::TestSuite::run_all()) {
             kprintf("[test] All tests passed!\n");
         } else {

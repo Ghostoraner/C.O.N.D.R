@@ -2,30 +2,74 @@
 #include <arch/x86_64/cpu/idt.hpp>
 #include <arch/x86_64/cpu/scheduler.hpp>
 #include <arch/x86_64/io.hpp>
+#include <lib/print.hpp>
 
 namespace nord::arch::keyboard {
 
 static constexpr u16 DATA_PORT = 0x60;
 static constexpr u16 STATUS_PORT = 0x64;
+static constexpr u32 MAX_WAITERS = 8;
+
 static bool g_shift = false;
 static bool g_caps_lock = false;
 static bool g_extended = false;
 static Event g_events[64];
 static u8 g_head = 0;
 static u8 g_tail = 0;
+static u64 g_dropped_events = 0;
+
+// Tasks blocked in a read. Every event wakes all of them; each one re-checks
+// focus and the queue, so each event is consumed by exactly one reader.
+static u32 g_waiters[MAX_WAITERS];
+
+// Focus owner: 0 = kernel console (shell), otherwise a user task id.
+static u32 g_focus = 0;
 
 static char translate(u8 code, bool shifted);
 
 static bool enqueue(Event event) {
     const u8 head = __atomic_load_n(&g_head, __ATOMIC_RELAXED);
     const u8 next = static_cast<u8>((head + 1) & 63);
-    if (next == __atomic_load_n(&g_tail, __ATOMIC_ACQUIRE)) return false;
+    if (next == __atomic_load_n(&g_tail, __ATOMIC_ACQUIRE)) {
+        ++g_dropped_events;
+        kprintf("[keyboard] dropped event: ring buffer full (%lu dropped)\n", g_dropped_events);
+        return false;
+    }
     g_events[head] = event;
     __atomic_store_n(&g_head, next, __ATOMIC_RELEASE);
     return true;
 }
 
-static u32 g_waiter_id;
+static bool queue_has_event() {
+    return __atomic_load_n(&g_tail, __ATOMIC_RELAXED) != __atomic_load_n(&g_head, __ATOMIC_ACQUIRE);
+}
+
+static void flush_queue() {
+    __atomic_store_n(&g_tail, __atomic_load_n(&g_head, __ATOMIC_ACQUIRE), __ATOMIC_RELEASE);
+}
+
+static void wake_all_waiters() {
+    for (u32 i = 0; i < MAX_WAITERS; ++i) {
+        if (g_waiters[i]) scheduler::wake(g_waiters[i]);
+    }
+}
+
+static bool add_waiter(u32 task_id) {
+    u32 free_slot = MAX_WAITERS;
+    for (u32 i = 0; i < MAX_WAITERS; ++i) {
+        if (g_waiters[i] == task_id) return true;
+        if (!g_waiters[i] && free_slot == MAX_WAITERS) free_slot = i;
+    }
+    if (free_slot == MAX_WAITERS) return false;
+    g_waiters[free_slot] = task_id;
+    return true;
+}
+
+static void remove_waiter(u32 task_id) {
+    for (u32 i = 0; i < MAX_WAITERS; ++i) {
+        if (g_waiters[i] == task_id) g_waiters[i] = 0;
+    }
+}
 
 static bool decode(u8 scan, Event& event) {
     if (scan == 0xE0 || scan == 0xE1) {
@@ -71,12 +115,104 @@ static bool decode(u8 scan, Event& event) {
 void handle_irq(Registers*) {
     while (inb(STATUS_PORT) & 0x01) {
         Event event{};
-        if (decode(inb(DATA_PORT), event) && enqueue(event)) scheduler::wake(g_waiter_id);
+        if (decode(inb(DATA_PORT), event) && enqueue(event)) wake_all_waiters();
     }
 }
 
-void set_waiter(u32 task_id) {
-    g_waiter_id = task_id;
+bool try_get_event(Event& event) {
+    const u8 tail = __atomic_load_n(&g_tail, __ATOMIC_RELAXED);
+    if (tail == __atomic_load_n(&g_head, __ATOMIC_ACQUIRE)) return false;
+    event = g_events[tail];
+    __atomic_store_n(&g_tail, static_cast<u8>((tail + 1) & 63), __ATOMIC_RELEASE);
+    return true;
+}
+
+// Blocks `task` until an event is available to `owner`. `owner` is 0 for the
+// console or the task id of a user program holding focus.
+static Event wait_event(u32 task_id, u32 owner) {
+    Event event{};
+    for (;;) {
+        if (g_focus == owner && try_get_event(event)) return event;
+
+        arch::cli();
+        // Check and register in one critical section: an IRQ after this point
+        // finds the task in the waiter list and wakes it, so no wakeup is lost.
+        if (g_focus == owner && queue_has_event()) {
+            arch::sti();
+            continue;
+        }
+        if (!add_waiter(task_id)) {
+            // Waiter list is full: back off and retry.
+            arch::sti();
+            scheduler::yield();
+            continue;
+        }
+        scheduler::block_current();   // returns with interrupts enabled
+        remove_waiter(task_id);
+    }
+}
+
+Event get_event() {
+    return wait_event(scheduler::current_id(), 0);
+}
+
+bool try_getc(char& character) {
+    Event event{};
+    while (try_get_event(event)) {
+        if (event.key == Key::character) {
+            character = event.character;
+            return true;
+        }
+    }
+    return false;
+}
+
+char getc() {
+    Event event{};
+    do { event = get_event(); } while (event.key != Key::character);
+    return event.character;
+}
+
+bool request_focus(u32 task_id) {
+    if (!task_id) return false;
+    if (g_focus == task_id) return true;
+    if (g_focus != 0) return false;          // another program owns the keyboard
+    g_focus = task_id;
+    flush_queue();                           // keys typed earlier belong to the console
+    wake_all_waiters();
+    return true;
+}
+
+bool release_focus(u32 task_id) {
+    if (!task_id || g_focus != task_id) return false;
+    g_focus = 0;
+    flush_queue();
+    wake_all_waiters();
+    return true;
+}
+
+u32 focus_owner() {
+    return g_focus;
+}
+
+bool read_char_for_task(u32 task_id, char& character) {
+    if (!task_id || g_focus != task_id) return false;
+    for (;;) {
+        const Event event = wait_event(task_id, task_id);
+        if (event.key == Key::character) {
+            character = event.character;
+            return true;
+        }
+    }
+}
+
+void clear_waiter(u32 task_id) {
+    remove_waiter(task_id);
+    if (g_focus == task_id) {
+        g_focus = 0;
+        flush_queue();
+        wake_all_waiters();
+    }
 }
 
 void init() {
@@ -88,7 +224,9 @@ void init() {
     g_extended = false;
     g_head = 0;
     g_tail = 0;
-    g_waiter_id = 0;
+    g_dropped_events = 0;
+    for (u32 i = 0; i < MAX_WAITERS; ++i) g_waiters[i] = 0;
+    g_focus = 0;
 }
 
 static char translate(u8 code, bool shifted) {
@@ -138,37 +276,28 @@ static char translate(u8 code, bool shifted) {
     }
 }
 
-bool try_get_event(Event& event) {
-    const u8 tail = __atomic_load_n(&g_tail, __ATOMIC_RELAXED);
-    if (tail == __atomic_load_n(&g_head, __ATOMIC_ACQUIRE)) return false;
-    event = g_events[tail];
-    __atomic_store_n(&g_tail, static_cast<u8>((tail + 1) & 63), __ATOMIC_RELEASE);
-    return true;
+bool test_enqueue(Event event) {
+    return enqueue(event);
 }
 
-Event get_event() {
-    Event event{};
-    while (!try_get_event(event)) {
-        scheduler::block_current();
+u64 test_dropped_count() {
+    return g_dropped_events;
+}
+
+bool test_add_waiter(u32 task_id) {
+    return add_waiter(task_id);
+}
+
+void test_remove_waiter(u32 task_id) {
+    remove_waiter(task_id);
+}
+
+u64 test_waiter_count() {
+    u64 count = 0;
+    for (u32 i = 0; i < MAX_WAITERS; ++i) {
+        if (g_waiters[i]) ++count;
     }
-    return event;
-}
-
-bool try_getc(char& character) {
-    Event event{};
-    while (try_get_event(event)) {
-        if (event.key == Key::character) {
-            character = event.character;
-            return true;
-        }
-    }
-    return false;
-}
-
-char getc() {
-    Event event{};
-    do { event = get_event(); } while (event.key != Key::character);
-    return event.character;
+    return count;
 }
 
 }
