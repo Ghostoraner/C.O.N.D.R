@@ -284,6 +284,10 @@ u64 test_dropped_count() {
     return g_dropped_events;
 }
 
+u64 dropped_events() {
+    return g_dropped_events;
+}
+
 bool test_add_waiter(u32 task_id) {
     return add_waiter(task_id);
 }

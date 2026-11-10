@@ -36,9 +36,9 @@ bool TestSuite::run_all() {
         info.result = TestResult::passed;
         info.failures = 0;
         info.total_checks = 0;
-        
+
         kprintf("[test] %s (iter: %u) ... ", info.name, info.iterations);
-        
+
         for (usize iter = 0; iter < info.iterations; ++iter) {
             if (!info.fn(iter)) {
                 info.result = TestResult::failed;
@@ -48,7 +48,7 @@ bool TestSuite::run_all() {
             }
             info.total_checks++;
         }
-        
+
         if (info.result == TestResult::passed) {
             kprintf("PASSED\n");
         } else {
@@ -88,7 +88,6 @@ static bool memory_address_space_create(usize) {
 }
 
 static bool scheduler_switch_count(usize) {
-    
     return nord::arch::scheduler::count() != 0;
 }
 
@@ -133,23 +132,46 @@ static bool keyboard_full_queue_drops(usize) {
     return true;
 }
 
-static bool keyboard_waiter_guard(usize) {
-    using nord::arch::keyboard::clear_waiter;
-    using nord::arch::keyboard::set_waiter;
+static bool keyboard_waiter_list(usize) {
+    using nord::arch::keyboard::test_add_waiter;
+    using nord::arch::keyboard::test_remove_waiter;
+    using nord::arch::keyboard::test_waiter_count;
 
-    const u32 me = nord::arch::scheduler::current_id();
-    const u32 other = me == 1 ? 2u : 1u;
+    const u64 before = test_waiter_count();
+    const u32 a = 0xF001;
+    const u32 b = 0xF002;
 
-    // Take over the waiter slot while the test runs; the shell re-registers
-    // itself the next time it blocks in get_event().
-    clear_waiter(me);
-    if (!set_waiter(me)) return false;
-    if (set_waiter(other)) return false;   // another waiter: must be rejected
-    if (!set_waiter(me)) return false;     // same waiter: idempotent
-    clear_waiter(me);
-    if (!set_waiter(other)) return false;  // slot free again
-    clear_waiter(other);
-    return true;
+    bool ok = test_add_waiter(a) && test_add_waiter(b);
+    ok = ok && test_waiter_count() == before + 2;
+    ok = ok && test_add_waiter(a);              // idempotent
+    ok = ok && test_waiter_count() == before + 2;
+
+    test_remove_waiter(a);
+    test_remove_waiter(b);
+    return ok && test_waiter_count() == before;
+}
+
+static bool keyboard_focus_rules(usize) {
+    using nord::arch::keyboard::focus_owner;
+    using nord::arch::keyboard::release_focus;
+    using nord::arch::keyboard::request_focus;
+
+    // A user program holds the keyboard right now (for example kbd-demo):
+    // skip, because this test needs the console to own focus.
+    if (focus_owner() != 0) return true;
+
+    const u32 a = 0xF101;
+    const u32 b = 0xF102;
+
+    bool ok = request_focus(a);
+    ok = ok && focus_owner() == a;
+    ok = ok && !request_focus(b);      // second owner rejected
+    ok = ok && !release_focus(b);      // non-owner cannot release
+    ok = ok && release_focus(a);
+    ok = ok && focus_owner() == 0;
+
+    if (focus_owner() == a) release_focus(a); // cleanup on failure
+    return ok;
 }
 
 static bool address_space_copy_invalid(usize) {
@@ -192,7 +214,8 @@ static bool register_once = []() -> bool {
     TestSuite::register_test("scheduler_switch_count", 5, &scheduler_switch_count);
     TestSuite::register_test("keyboard_queue_order", 5, &keyboard_queue_order);
     TestSuite::register_test("keyboard_full_queue_drops", 3, &keyboard_full_queue_drops);
-    TestSuite::register_test("keyboard_waiter_guard", 3, &keyboard_waiter_guard);
+    TestSuite::register_test("keyboard_waiter_list", 3, &keyboard_waiter_list);
+    TestSuite::register_test("keyboard_focus_rules", 3, &keyboard_focus_rules);
     TestSuite::register_test("address_space_copy_invalid", 3, &address_space_copy_invalid);
     g_tests_registered = true;
     return true;

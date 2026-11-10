@@ -16,6 +16,7 @@ static constexpr u64 SYS_SERVICE_ACCEPT = 5;
 static constexpr u64 SYS_IPC_SEND = 6;
 static constexpr u64 SYS_IPC_RECEIVE = 7;
 static constexpr u64 SYS_READ_CHAR = 8;
+static constexpr u64 SYS_KBD_FOCUS = 9;
 static constexpr usize MAX_WRITE_SIZE = 256;
 static constexpr usize MAX_READ_CHAR_SIZE = 256;
 static constexpr usize MAX_SERVICE_NAME = 24;
@@ -113,18 +114,18 @@ void dispatch(Registers* registers) {
         return;
     }
     if (registers->rax == SYS_READ_CHAR) {
-        auto* space = scheduler::current_address_space();
         const usize capacity = registers->rsi;
         char scratch = 0;
-        // Validate the user pointer up front: an invalid buffer fails
-        // immediately instead of blocking on it.
+        // Validate the user pointer before blocking: a bad buffer fails
+        // immediately instead of sleeping first.
         if (!space || capacity < 1 || capacity > MAX_READ_CHAR_SIZE
             || !mm::address_space::copy_to_user(*space, registers->rdi, &scratch, 1)) {
             registers->rax = static_cast<u64>(-1);
             return;
         }
         char character = 0;
-        if (!keyboard::getc_blocking(character)) {
+        // Returns false (-11) when this task does not hold keyboard focus.
+        if (!keyboard::read_char_for_task(scheduler::current_id(), character)) {
             registers->rax = static_cast<u64>(-11);
             return;
         }
@@ -133,6 +134,14 @@ void dispatch(Registers* registers) {
             return;
         }
         registers->rax = 1;
+        return;
+    }
+    if (registers->rax == SYS_KBD_FOCUS) {
+        // rdi != 0: take keyboard focus. rdi == 0: return it to the console.
+        const u32 id = scheduler::current_id();
+        const bool ok = registers->rdi != 0 ? keyboard::request_focus(id)
+                                            : keyboard::release_focus(id);
+        registers->rax = ok ? 0 : static_cast<u64>(-11);
         return;
     }
     registers->rax = static_cast<u64>(-38);

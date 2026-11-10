@@ -6,6 +6,14 @@ section .text
 _start:
     sub rsp, 64
 
+    ; Take keyboard focus (syscall 9, rdi = 1). Console input is suspended
+    ; until this program gives focus back or exits.
+    mov rax, 9
+    mov rdi, 1
+    int 0x80
+    cmp rax, 0
+    jne .read_failed
+
     ; Announce ourselves on the console (syscall 1).
     mov rax, 1
     lea rdi, [msg_ready]
@@ -29,6 +37,11 @@ _start:
 
     dec ecx
     jnz .read
+
+    ; Return keyboard focus to the console (syscall 9, rdi = 0).
+    mov rax, 9
+    xor rdi, rdi
+    int 0x80
 
     mov rax, 1
     lea rdi, [msg_done]
@@ -58,4 +71,4 @@ msg_error_end:
 msg_done: db "kbd-demo: done", 10
 msg_done_end:
 
-section .note.GNU-stack
+section .note.GNU-stack noalloc noexec nowrite progbits
