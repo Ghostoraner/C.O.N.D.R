@@ -9,8 +9,8 @@
   <img src="https://img.shields.io/badge/Boot-Limine-7c3aed?style=for-the-badge" alt="Limine">
   <a href="LICENSE"><img src="https://img.shields.io/badge/License-MIT-green?style=for-the-badge" alt="MIT License"></a>
 </p>
- 
- 
+
+
 # C.O.N.D.R.
 
 **Command Operating Node Data Router** is an experimental 64-bit x86 operating
@@ -28,11 +28,15 @@ and UEFI systems.
 
 - Cooperative single-CPU kernel task scheduler with independent stacks (`nord::arch::scheduler`)
 
+- Ring 3 user tasks with per-process address spaces and an ELF64 loader
+
 - Physical page allocator, kernel heap, and virtual memory management
 
 - 32-bit Limine framebuffer with a 12x22 console font
 
 - PS/2 keyboard input and framebuffer command console
+
+- User-mode keyboard input: a single user task can take keyboard focus, read characters with a blocking syscall, and return focus to the console; several readers can wait at once
 
 - 32-bit `NodeId` (`u32`) architecture integrated across IPC, capability rights, and NVMFS storage handles
 
@@ -40,7 +44,7 @@ and UEFI systems.
 
 - Two-slot NVMFS snapshot mechanism with CRC persistence over block devices
 
-- Kernel-level automated unit testing framework (`kernel/test/`) covering PMM, heap, address spaces, and scheduler status
+- Kernel-level automated unit testing framework (`kernel/test/`) covering PMM, heap, address spaces, scheduler status, keyboard queue, waiter list and focus rules
 
 - Freestanding command tokenizer with quoted arguments
 
@@ -58,15 +62,14 @@ make iso        # build/condr.iso (clones Limine on first use)
 make usb-iso    # build/condr-usb.iso, hybrid BIOS/UEFI image (requires xorriso)
 make run        # boot C.O.N.D.R. in QEMU
 make debug      # boot QEMU paused for GDB
-
 ```
 
 Click the QEMU window to give the guest keyboard focus. `Ctrl+Alt+3` switches to
 the COM1 serial console; `Ctrl+Alt+1` returns to the framebuffer. Press `Ctrl+C`
 in the launching terminal to stop QEMU.
 
-For USB writing instructions and firmware notes, see [docs/USB_BOOT.md](https://www.google.com/search?q=docs/USB_BOOT.md).
-The upcoming kernel milestones are tracked in [docs/ROADMAP.md](https://www.google.com/search?q=docs/ROADMAP.md).
+For USB writing instructions and firmware notes, see [docs/USB_BOOT.md](docs/USB_BOOT.md).
+The upcoming kernel milestones are tracked in [docs/ROADMAP.md](docs/ROADMAP.md).
 
 ## NVMFS & Storage
 
@@ -114,11 +117,33 @@ get 2
 stat 2
 test
 sys
-
 ```
 
 IDs are monotonically assigned during each boot, so example IDs change after
 creating or deleting objects. The tokenizer supports single and double quotes.
+
+## User-mode syscalls
+
+User programs enter the kernel with `int 0x80`. The number goes in `RAX`.
+
+| No. | Name | Action |
+| --- | --- | --- |
+| 1 | `write` | Print a buffer to the console |
+| 2 | `exit` | Terminate the calling task |
+| 3 | `service_register` | Register an IPC service by name |
+| 4 | `service_connect` | Connect to a named IPC service |
+| 5 | `service_accept` | Accept an incoming connection |
+| 6 | `ipc_send` | Send a message on a handle |
+| 7 | `ipc_receive` | Receive a message on a handle |
+| 8 | `read_char` | Block until one character arrives; requires keyboard focus |
+| 9 | `kbd_focus` | `RDI != 0` takes keyboard focus, `RDI == 0` returns it to the console |
+
+`read_char` returns `1` on success, `-1` for an invalid buffer and `-11` when the
+caller does not hold focus. While a user task holds focus, console input is
+suspended. Focus is released automatically when the task exits.
+
+The `kbd-demo` program (`user/kbd_demo.asm`) shows the flow: it takes focus,
+reads five characters, echoes them, and returns focus to the console.
 
 ## Debugging
 
@@ -126,8 +151,8 @@ Run `make debug`, then in another terminal run:
 
 ```sh
 ./scripts/gdb-attach.sh
-
 ```
+
 ## Screenshots
 
 <p align="center">
@@ -165,13 +190,15 @@ x86, написанная на freestanding C++23 и NASM. Загружаетс�
 * Загрузка Limine, точка входа x86_64, GDT, IDT и обработчики прерываний
 * Переназначенный PIC 8259, тики PIT 100 Гц и очередь ввода PS/2 через IRQ
 * Кооперативный однопроцессорный планировщик задач ядра с отдельными стеками (`nord::arch::scheduler`)
+* Пользовательские задачи Ring 3 с собственными адресными пространствами и загрузчиком ELF64
 * Физический аллокатор страниц, куча ядра и управление виртуальной памятью
 * Framebuffer Limine 32 bpp со шрифтом консоли 12x22
 * Ввод с PS/2-клавиатуры и графическая командная консоль
+* Ввод с клавиатуры для user mode: одна пользовательская задача может взять фокус клавиатуры, читать символы блокирующим syscall и вернуть фокус консоли; несколько читателей могут ждать одновременно
 * Архитектура 32-битных `NodeId` (`u32`), интегрированная в IPC, права возможностей и хранилище NVMFS
 * Абстракция блочных устройств (`BlockDevice`) с регистрацией драйвера VirtIO-blk
 * Двухслотовый механизм снапшотов NVMFS с защитой CRC поверх блочного слоя
-* Модуль автоматического юнит-тестирования ядра (`kernel/test/`) для PMM, кучи, адресных пространств и планировщика
+* Модуль автоматического юнит-тестирования ядра (`kernel/test/`) для PMM, кучи, адресных пространств, планировщика, очереди клавиатуры, списка ожидания и правил фокуса
 * Freestanding-токенизатор команд с поддержкой аргументов в кавычках
 
 ## Сборка и запуск
@@ -186,15 +213,14 @@ make iso        # сборка build/condr.iso (при первом запуск
 make usb-iso    # сборка build/condr-usb.iso, hybrid BIOS/UEFI (нужен xorriso)
 make run        # запуск C.O.N.D.R. в QEMU
 make debug      # запуск QEMU с паузой для GDB
-
 ```
 
 Щёлкни по окну QEMU, чтобы передать клавиатуру гостевой системе. `Ctrl+Alt+3`
 переключает на serial-консоль COM1, `Ctrl+Alt+1` возвращает framebuffer.
 Остановить QEMU можно через `Ctrl+C` в терминале запуска.
 
-Инструкция по записи на USB и примечания по прошивкам: [docs/USB_BOOT.md](https://www.google.com/search?q=docs/USB_BOOT.md).
-Следующие этапы разработки ядра: [docs/ROADMAP.md](https://www.google.com/search?q=docs/ROADMAP.md).
+Инструкция по записи на USB и примечания по прошивкам: [docs/USB_BOOT.md](docs/USB_BOOT.md).
+Следующие этапы разработки ядра: [docs/ROADMAP.md](docs/ROADMAP.md).
 
 ## NVMFS и Хранилище
 
@@ -242,12 +268,34 @@ get 2
 stat 2
 test
 sys
-
 ```
 
 ID назначаются последовательно во время загрузки, поэтому примерные значения
 меняются после создания или удаления объектов. Токенизатор поддерживает
 одинарные и двойные кавычки.
+
+## Системные вызовы для user mode
+
+User-программы входят в ядро через `int 0x80`. Номер вызова передаётся в `RAX`.
+
+| №  | Имя | Действие |
+| --- | --- | --- |
+| 1 | `write` | Вывести буфер в консоль |
+| 2 | `exit` | Завершить вызывающую задачу |
+| 3 | `service_register` | Зарегистрировать IPC-сервис по имени |
+| 4 | `service_connect` | Подключиться к IPC-сервису по имени |
+| 5 | `service_accept` | Принять входящее подключение |
+| 6 | `ipc_send` | Отправить сообщение по дескриптору |
+| 7 | `ipc_receive` | Получить сообщение по дескриптору |
+| 8 | `read_char` | Ждать один символ; требует фокуса клавиатуры |
+| 9 | `kbd_focus` | `RDI != 0` берёт фокус клавиатуры, `RDI == 0` возвращает его консоли |
+
+`read_char` возвращает `1` при успехе, `-1` при неверном буфере и `-11`, если
+вызывающая задача не владеет фокусом. Пока user-задача держит фокус, ввод в
+консоль приостановлен. Фокус снимается автоматически при завершении задачи.
+
+Программа `kbd-demo` (`user/kbd_demo.asm`) показывает весь сценарий: берёт
+фокус, читает пять символов, повторяет их и возвращает фокус консоли.
 
 ## Отладка
 
@@ -255,8 +303,8 @@ ID назначаются последовательно во время заг�
 
 ```sh
 ./scripts/gdb-attach.sh
-
 ```
+
 ## Скриншоты
 
 <p align="center">
