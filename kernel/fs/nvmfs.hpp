@@ -72,6 +72,16 @@ enum class Right : u8 {
 
 using ChangeHook = void (*)();
 
+// RAII guard for callers that need to keep a raw Node* valid across several
+// operations. Individual NVMFS calls are already internally serialized.
+class Lock {
+public:
+    Lock();
+    ~Lock();
+    Lock(const Lock&) = delete;
+    Lock& operator=(const Lock&) = delete;
+};
+
 void init();
 void set_change_hook(ChangeHook hook);
 bool create(NodeType type, const char* name, NodeId container_id,

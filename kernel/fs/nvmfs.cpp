@@ -1,8 +1,14 @@
 #include <fs/nvmfs.hpp>
+#include <lib/spinlock.hpp>
 #include <lib/string.hpp>
 #include <mm/heap.hpp>
 
 namespace nord::nvmfs {
+
+static sync::RecursiveSpinLock g_lock;
+
+Lock::Lock() { g_lock.lock(); }
+Lock::~Lock() { g_lock.unlock(); }
 
 static constexpr usize NODE_CAPACITY = 128;
 static constexpr usize TAG_CAPACITY = 512;
@@ -75,6 +81,7 @@ static TagIndex* find_tag_entry(NodeId id, const char* key, const char* value) {
 }
 
 void init() {
+    Lock guard;
     memset(g_nodes, 0, sizeof(g_nodes));
     memset(g_tag_index, 0, sizeof(g_tag_index));
     g_node_count = 0;
@@ -85,11 +92,13 @@ void init() {
 }
 
 void set_change_hook(ChangeHook hook) {
+    Lock guard;
     g_change_hook = hook;
 }
 
 bool create(NodeType type, const char* node_name, NodeId container_id,
             NodeId& result, Error& error) {
+    Lock guard;
     if (!g_initialized) { error = Error::not_initialized; return false; }
     if (!node_name || !*node_name || length(node_name) >= NAME_CAPACITY) {
         error = Error::invalid_argument;
@@ -127,6 +136,7 @@ bool create(NodeType type, const char* node_name, NodeId container_id,
 }
 
 Node* find(NodeId id) {
+    Lock guard;
     if (!id) return nullptr;
     for (usize i = 0; i < NODE_CAPACITY; ++i)
         if (g_nodes[i].active && g_nodes[i].id == id) return &g_nodes[i];
@@ -134,6 +144,7 @@ Node* find(NodeId id) {
 }
 
 Node* at(usize active_position) {
+    Lock guard;
     for (usize i = 0; i < NODE_CAPACITY; ++i) {
         if (!g_nodes[i].active) continue;
         if (active_position-- == 0) return &g_nodes[i];
@@ -142,6 +153,7 @@ Node* at(usize active_position) {
 }
 
 Node* directory_at(const Directory& directory, usize& cursor) {
+    Lock guard;
     while (cursor < NODE_CAPACITY) {
         Node* node = &g_nodes[cursor++];
         if (node->active && node->container_id == directory.container_id) return node;
@@ -149,9 +161,13 @@ Node* directory_at(const Directory& directory, usize& cursor) {
     return nullptr;
 }
 
-usize count() { return g_node_count; }
+usize count() {
+    Lock guard;
+    return g_node_count;
+}
 
 bool add_tag(NodeId id, const char* key, const char* value, Error& error) {
+    Lock guard;
     Node* node = find(id);
     if (!node) { error = Error::not_found; return false; }
     if (!key || !*key || !value || length(key) >= TAG_KEY_CAPACITY
@@ -179,6 +195,7 @@ bool add_tag(NodeId id, const char* key, const char* value, Error& error) {
 }
 
 bool remove_tag(NodeId id, const char* key, const char* value, Error& error) {
+    Lock guard;
     TagIndex* entry = find_tag_entry(id, key, value);
     if (!entry) { error = Error::not_found; return false; }
     entry->active = false;
@@ -189,6 +206,7 @@ bool remove_tag(NodeId id, const char* key, const char* value, Error& error) {
 }
 
 bool find_tag(const char* key, const char* value, usize& cursor, NodeId& result) {
+    Lock guard;
     if (!key || !value) return false;
     while (cursor < TAG_CAPACITY) {
         const TagIndex& entry = g_tag_index[cursor++];
@@ -202,6 +220,7 @@ bool find_tag(const char* key, const char* value, usize& cursor, NodeId& result)
 }
 
 bool tag_at(usize& cursor, TagView& result) {
+    Lock guard;
     while (cursor < TAG_CAPACITY) {
         const TagIndex& entry = g_tag_index[cursor++];
         if (!entry.active || !find(entry.node_id)) continue;
@@ -212,6 +231,7 @@ bool tag_at(usize& cursor, TagView& result) {
 }
 
 bool write(NodeId id, const void* bytes, usize size, bool append, Error& error) {
+    Lock guard;
     Node* node = find(id);
     if (!node) { error = Error::not_found; return false; }
     if (node->type != NodeType::file) { error = Error::invalid_argument; return false; }
@@ -245,6 +265,7 @@ bool write(NodeId id, const void* bytes, usize size, bool append, Error& error) 
 }
 
 bool erase(NodeId id, Error& error) {
+    Lock guard;
     Node* node = find(id);
     if (!node) { error = Error::not_found; return false; }
     if (node->type == NodeType::vault || node->type == NodeType::directory) {
@@ -309,6 +330,7 @@ const char* error_text(Error error) {
 }
 
 void stats(u64& nodes, u64& tags, u64& stream_bytes, u64& stream_limit) {
+    Lock guard;
     nodes = g_node_count;
     tags = g_tag_count;
     stream_bytes = g_stream_bytes;
@@ -316,6 +338,7 @@ void stats(u64& nodes, u64& tags, u64& stream_bytes, u64& stream_limit) {
 }
 
 bool set_owner(NodeId id, u32 owner, Error& error) {
+    Lock guard;
     if (!g_initialized) { error = Error::not_initialized; return false; }
     Node* node = find(id);
     if (!node) { error = Error::not_found; return false; }
@@ -326,6 +349,7 @@ bool set_owner(NodeId id, u32 owner, Error& error) {
 }
 
 bool set_rights(NodeId id, u8 rights, Error& error) {
+    Lock guard;
     if (!g_initialized) { error = Error::not_initialized; return false; }
     Node* node = find(id);
     if (!node) { error = Error::not_found; return false; }
@@ -336,6 +360,7 @@ bool set_rights(NodeId id, u8 rights, Error& error) {
 }
 
 bool check_rights(NodeId id, u8 required, bool& has) {
+    Lock guard;
     if (!g_initialized) { has = false; return false; }
     Node* node = find(id);
     if (!node) { has = false; return false; }
@@ -344,12 +369,14 @@ bool check_rights(NodeId id, u8 required, bool& has) {
 }
 
 u8 rights_of(NodeId id) {
+    Lock guard;
     if (!g_initialized) return 0;
     Node* node = find(id);
     return node ? node->rights : 0;
 }
 
 bool selftest(u32& checks, Error& error) {
+    Lock guard;
     checks = 0;
     NodeId vault_id = 0;
     if (!create(NodeType::vault, "selftest-vault", 0, vault_id, error)) return false;
@@ -389,6 +416,7 @@ bool selftest(u32& checks, Error& error) {
 }
 
 bool serialize(void* output, usize capacity, usize& size) {
+    Lock guard;
     size = 0;
     if (!g_initialized || !output) return false;
 
@@ -467,6 +495,7 @@ static void free_restore_nodes() {
 }
 
 bool deserialize(const void* input, usize size) {
+    Lock guard;
     if (!input || size < sizeof(SnapshotHeader)) return false;
     SnapshotHeader header{};
     memcpy(&header, input, sizeof(header));

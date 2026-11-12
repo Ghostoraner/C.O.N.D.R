@@ -154,9 +154,19 @@ bool sync() {
     memset(buffer, 0, SLOT_BYTES);
 
     usize payload_size = 0;
-    if (!nvmfs::serialize(buffer + SECTOR_SIZE, SLOT_BYTES - SECTOR_SIZE, payload_size)) {
-        mm::heap::kfree(buffer);
-        return false;
+    {
+        nvmfs::Lock guard;
+        if (!g_dirty) {
+            mm::heap::kfree(buffer);
+            return true;
+        }
+        if (!nvmfs::serialize(buffer + SECTOR_SIZE, SLOT_BYTES - SECTOR_SIZE, payload_size)) {
+            mm::heap::kfree(buffer);
+            return false;
+        }
+        // The snapshot now contains every change made so far. Any mutation
+        // after this point marks the tree dirty again and triggers a later sync.
+        g_dirty = false;
     }
 
     const u8 target_slot = g_active_slot ^ 1;
@@ -181,11 +191,14 @@ bool sync() {
     }
     if (success) success = g_blk->write_sector(target_lba, buffer);
     mm::heap::kfree(buffer);
-    if (!success) return false;
+    if (!success) {
+        nvmfs::Lock guard;
+        g_dirty = true;
+        return false;
+    }
 
     g_active_slot = target_slot;
     g_generation = header.generation;
-    g_dirty = false;
     return true;
 }
 

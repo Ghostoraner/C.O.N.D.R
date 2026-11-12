@@ -164,7 +164,7 @@ def main():
             if "user-mode IPC: pong" not in restored:
                 raise RuntimeError(f"Ring 3 IPC smoke test failed\n{restored}")
             send_line(monitor, "check")
-            checks = wait_for_log(process, log, "IPC check: 7 passed")
+            checks = wait_for_log(process, log, "IPC check: 13 passed")
             if "NVMFS check: 6 passed" not in checks:
                 raise RuntimeError(f"NVMFS self-test failed\n{checks}")
             send_line(monitor, "test")

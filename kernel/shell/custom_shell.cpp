@@ -128,6 +128,7 @@ static void command_ps() {
 }
 
 static void list_container(nvmfs::NodeId container) {
+    nvmfs::Lock guard;
     nvmfs::Directory directory{container};
     usize cursor = 0;
     nvmfs::Node* node = nullptr;
@@ -140,6 +141,7 @@ static void list_container(nvmfs::NodeId container) {
 }
 
 static void command_vault(const TokenList& tokens) {
+    nvmfs::Lock guard;
     if (tokens.count == 1) {
         for (usize i = 0; i < nvmfs::count(); ++i) {
             nvmfs::Node* node = nvmfs::at(i);
@@ -156,6 +158,7 @@ static void command_vault(const TokenList& tokens) {
 }
 
 static void command_cd(const TokenList& tokens) {
+    nvmfs::Lock guard;
     if (tokens.count != 2) { kprintf("usage: cd ID|..\n"); return; }
     if (equal(tokens.value[1], "..")) {
         nvmfs::Node* current = nvmfs::find(g_context);
@@ -182,6 +185,7 @@ static void command_create(const TokenList& tokens, nvmfs::NodeType type) {
 }
 
 static void command_find(const TokenList& tokens) {
+    nvmfs::Lock guard;
     char* key = nullptr;
     char* value = nullptr;
     if (tokens.count != 2 || !parse_tag_query(tokens.value[1], key, value)) {
@@ -199,6 +203,7 @@ static void command_find(const TokenList& tokens) {
 }
 
 static void command_stat(const TokenList& tokens) {
+    nvmfs::Lock guard;
     nvmfs::NodeId id;
     if (tokens.count != 2 || !parse_id(tokens.value[1], id)) { kprintf("usage: stat ID\n"); return; }
     nvmfs::Node* node = nvmfs::find(id);
@@ -245,6 +250,7 @@ static void command_stream(const TokenList& tokens, bool append) {
 }
 
 static void command_get(const TokenList& tokens) {
+    nvmfs::Lock guard;
     nvmfs::NodeId id;
     if (tokens.count != 2 || !parse_id(tokens.value[1], id)) { kprintf("usage: get ID\n"); return; }
     nvmfs::Node* node = nvmfs::find(id);
@@ -407,6 +413,7 @@ static void execute(const char* input) {
     }
     if (equal(command, "cd")) { command_cd(tokens); return; }
     if (equal(command, "pwd")) {
+        nvmfs::Lock guard;
         nvmfs::Node* node = nvmfs::find(g_context);
         if (!node) kprintf("condr:/\n");
         else kprintf("condr:/%s [%#lx]\n", node->name, node->id);
@@ -484,6 +491,7 @@ static void execute(const char* input) {
             execute(line);
             length = 0;
             line[0] = '\0';
+            nvmfs::Lock guard;
             nvmfs::Node* context = nvmfs::find(g_context);
             if (!context) kprintf("condr:/# ");
             else kprintf("condr:/%s# ", context->name);

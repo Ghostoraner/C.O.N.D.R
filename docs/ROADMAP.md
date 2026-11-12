@@ -14,7 +14,8 @@ planned unless marked as implemented.
 - Per-process PML4 roots with private user mappings and shared supervisor-only kernel mappings
 - TSS `RSP0` switching, Ring 3 entry, and user exception containment
 - Embedded ELF64 loader and `int 0x80` write/exit syscalls
-- Named NVMFS services with task-owned capability handles and bounded IPC channels
+- Named NVMFS services with task-owned capability handles and a private bounded endpoint pair per connection
+- Preemption-safe spinlocks around PMM, NVMFS, and IPC state
 - PCI enumeration, legacy VirtIO block sector I/O, and two-slot CRC NVMFS snapshots
 - QEMU integration test for short IDs, IPC, and persistence across reboot
 - Framebuffer console, serial logging, and NVMFS object registry
@@ -23,7 +24,7 @@ planned unless marked as implemented.
 
 - Add ACPI discovery and local APIC support, while retaining a tested legacy
   PIC fallback for emulators and older machines
-- Establish explicit interrupt-safe locking before enabling multiple CPUs
+- Make the single-CPU spinlocks SMP-ready (IRQ-safe acquisition and per-CPU state) before enabling multiple CPUs
 - Add NX page protections, guard pages, and stronger user-copy validation
 
 ## User mode and services
@@ -48,6 +49,6 @@ planned unless marked as implemented.
 - Test BIOS and UEFI boot paths in QEMU before treating a USB image as a release
 
 The next milestones are blocking IPC, an ELF loader for external programs,
-interrupt-safe synchronization, and NX/guard-page support before adding SMP.
+SMP-safe synchronization, and NX/guard-page support before adding SMP.
 The current ELF demo is embedded in the kernel image; IPC queues and snapshots
 have fixed capacities, and persistent storage currently requires VirtIO.

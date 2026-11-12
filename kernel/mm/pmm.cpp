@@ -1,8 +1,11 @@
 #include <mm/pmm.hpp>
 #include <lib/print.hpp>
+#include <lib/spinlock.hpp>
 #include <lib/string.hpp>
 
 namespace nord::mm::pmm {
+
+static sync::SpinLock g_lock;
 
 static u8*   g_bitmap      = nullptr;
 static u64   g_bitmap_size = 0;
@@ -17,7 +20,10 @@ static inline bool bit_test(u64 i)  { return g_bitmap[i / 8] & (1u << (i % 8)); 
 
 u64 hhdm()        { return g_hhdm; }
 u64 total_bytes() { return g_total_pages * PAGE_SIZE; }
-u64 used_bytes()  { return g_used_pages  * PAGE_SIZE; }
+u64 used_bytes()  {
+    sync::LockGuard guard(g_lock);
+    return g_used_pages * PAGE_SIZE;
+}
 
 void init(limine::MemmapResponse* memmap, u64 hhdm_offset) {
     g_hhdm = hhdm_offset;
@@ -81,6 +87,7 @@ static paddr_t find_range(usize count, u64 start, u64 end) {
 
 paddr_t alloc_pages(usize count) {
     if (count == 0) return 0;
+    sync::LockGuard guard(g_lock);
     paddr_t p = find_range(count, g_last_hint, g_total_pages);
     if (!p) { g_last_hint = 0; p = find_range(count, 0, g_total_pages); }
     if (p) memset(phys_to_virt<void>(p), 0, count * PAGE_SIZE);
@@ -90,6 +97,7 @@ paddr_t alloc_pages(usize count) {
 paddr_t alloc_page() { return alloc_pages(1); }
 
 void free_pages(paddr_t addr, usize count) {
+    sync::LockGuard guard(g_lock);
     if (!count || (addr & (PAGE_SIZE - 1)))
         panic("pmm: invalid free address %p", (void*)addr);
     const u64 idx = addr / PAGE_SIZE;

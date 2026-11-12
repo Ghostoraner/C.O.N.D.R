@@ -34,8 +34,11 @@ User programs invoke `int 0x80` with the syscall number in `RAX`:
 
 The kernel validates user ranges by walking the current address space before
 copying data. Service names are indexed in NVMFS, while IPC handles are bound to
-the owning task and revoked when it exits. Endpoints have bounded queues of
-eight messages. The demo connects to its own `echo` service to exercise the
+the owning task and revoked when it exits. Each `service_connect` creates its
+own client endpoint, and each `service_accept` creates a matching server
+endpoint, so every connection has a private pair of bounded eight-message
+queues. Multiple clients can therefore talk to one service without sharing a
+channel. The demo connects to its own `echo` service to exercise the
 request/reply path. There are no file or memory-management syscalls. Page-table
 mappings currently do not enforce NX, and this code is not a security boundary
 suitable for untrusted software.
