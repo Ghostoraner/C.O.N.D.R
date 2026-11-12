@@ -22,6 +22,7 @@ static void emit_str(const char* s) { while (*s) emit(*s++); }
 static void emit_uint(u64 v, u32 base, bool upper, usize pad, char pad_ch) {
     const char* digits = upper ? "0123456789ABCDEF" : "0123456789abcdef";
     char buf[64];
+    if (pad > sizeof(buf)) pad = sizeof(buf);
     usize n = 0;
     if (v == 0) buf[n++] = '0';
     while (v) { buf[n++] = digits[v % base]; v /= base; }

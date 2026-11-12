@@ -6,7 +6,6 @@
 #include <lib/print.hpp>
 #include <lib/string.hpp>
 #include <mm/pmm.hpp>
-#include <mm/pmm.hpp>
 
 namespace nord::drivers::block::virtio_blk {
 

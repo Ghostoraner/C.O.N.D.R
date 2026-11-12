@@ -8,6 +8,8 @@
 #include <ipc/ipc.hpp>
 #include <lib/print.hpp>
 #include <lib/string.hpp>
+#include <mm/address_space.hpp>
+#include <mm/elf_loader.hpp>
 #include <mm/heap.hpp>
 #include <storage/persistence.hpp>
 #include <test/test.hpp>
@@ -108,6 +110,8 @@ static void print_help() {
     kprintf("  stat ID | rm ID    inspect/delete object\n");
     kprintf("  tag ID KEY VALUE   add tag; untag removes it\n");
     kprintf("  put ID \"TEXT\" | add ID \"TEXT\" | get ID\n");
+    kprintf("  sync               write the NVMFS snapshot to disk\n");
+    kprintf("  kbd-demo           run the keyboard reader demo on demand\n");
     kprintf("  sys | check | ver | reboot | sd | help | cpuid\n");
     kprintf("  ps                 list kernel tasks\n");
 }
@@ -117,7 +121,8 @@ static void command_ps() {
         arch::scheduler::TaskInfo task{};
         if (!arch::scheduler::at(i, task)) continue;
         const char* state = task.state == arch::scheduler::State::running ? "running"
-            : task.state == arch::scheduler::State::ready ? "ready" : "exited";
+            : task.state == arch::scheduler::State::ready ? "ready"
+            : task.state == arch::scheduler::State::blocked ? "blocked" : "exited";
         kprintf("%u  %s  %s  switches=%lu\n", task.id, state, task.name, task.switches);
     }
 }
@@ -147,7 +152,7 @@ static void command_vault(const TokenList& tokens) {
     nvmfs::Error failure;
     if (!nvmfs::create(nvmfs::NodeType::vault, tokens.value[1], g_context, id, failure))
         error("vault", failure);
-    else kprintf("vault created: %#lx\n", id);
+    else kprintf("vault created: %06lx\n", id);
 }
 
 static void command_cd(const TokenList& tokens) {
@@ -173,7 +178,7 @@ static void command_create(const TokenList& tokens, nvmfs::NodeType type) {
     nvmfs::NodeId id;
     nvmfs::Error failure;
     if (!nvmfs::create(type, tokens.value[1], g_context, id, failure)) error(tokens.value[0], failure);
-    else kprintf("created: %#lx\n", id);
+    else kprintf("created: %06lx\n", id);
 }
 
 static void command_find(const TokenList& tokens) {
@@ -248,6 +253,37 @@ static void command_get(const TokenList& tokens) {
     if (node->stream.size && node->stream.bytes[node->stream.size - 1] != '\n') kprintf("\n");
 }
 
+static void command_sync() {
+    if (!storage::persistence::available()) {
+        kprintf("sync: no persistent block device\n");
+        return;
+    }
+    if (storage::persistence::sync()) kprintf("NVMFS snapshot committed\n");
+    else kprintf("sync: failed to write snapshot\n");
+}
+
+static void command_kbd_demo() {
+    mm::address_space::AddressSpace space{};
+    if (!mm::address_space::create(space)) {
+        kprintf("kbd-demo: cannot create address space\n");
+        return;
+    }
+    u64 entry;
+    u64 stack;
+    if (!mm::elf_loader::load_kbd_demo(space, entry, stack)) {
+        mm::address_space::destroy(space);
+        kprintf("kbd-demo: failed to load image\n");
+        return;
+    }
+    u32 id;
+    if (!arch::scheduler::create_user("kbd-demo", space, entry, stack, id)) {
+        mm::address_space::destroy(space);
+        kprintf("kbd-demo: cannot create task\n");
+        return;
+    }
+    kprintf("kbd-demo started\n");
+}
+
 static void command_sys() {
     u64 nodes, tags, streams, stream_limit, heap_used, heap_capacity;
     nvmfs::stats(nodes, tags, streams, stream_limit);
@@ -266,31 +302,41 @@ static void command_cpuid() {
     nord::arch::cpuid(0, 0, eax, ebx, ecx, edx);
     char vendor[13];
     memcpy(vendor, &ebx, 4);
-    memcpy(vendor + 4, &eax, 4);
+    memcpy(vendor + 4, &edx, 4);
     memcpy(vendor + 8, &ecx, 4);
     vendor[12] = '\0';
     kprintf("CPU vendor: %s\n", vendor);
     kprintf("CPUID level: %u\n", eax);
-    if (eax >= 0x80000004) {
-        nord::arch::cpuid(0x80000002, 0, eax, ebx, ecx, edx);
-        kprintf("Model name string: %s\n", reinterpret_cast<const char*>(&eax));
-        nord::arch::cpuid(0x80000003, 0, eax, ebx, ecx, edx);
-        kprintf("                   %s\n", reinterpret_cast<const char*>(&eax));
-        nord::arch::cpuid(0x80000004, 0, eax, ebx, ecx, edx);
-        kprintf("                   %s\n", reinterpret_cast<const char*>(&eax));
+
+    u32 extended_max;
+    nord::arch::cpuid(0x80000000, 0, extended_max, ebx, ecx, edx);
+    if (extended_max >= 0x80000004) {
+        char model[49];
+        for (u32 leaf = 0; leaf < 3; ++leaf) {
+            u32 a, b, c, d;
+            nord::arch::cpuid(0x80000002 + leaf, 0, a, b, c, d);
+            memcpy(model + leaf * 16, &a, 4);
+            memcpy(model + leaf * 16 + 4, &b, 4);
+            memcpy(model + leaf * 16 + 8, &c, 4);
+            memcpy(model + leaf * 16 + 12, &d, 4);
+        }
+        model[48] = '\0';
+        kprintf("Model name: %s\n", model);
     }
+
     nord::arch::cpuid(1, 0, eax, ebx, ecx, edx);
     kprintf("Features:\n");
-    if (ebx & (1 << 3)) kprintf("  SSE\n");
-    if (ebx & (1 << 21)) kprintf("  SSE2\n");
-    if (ecx & (1 << 0)) kprintf("  SSE3\n");
-    if (ecx & (1 << 19)) kprintf("  AES-NI\n");
+    if (edx & (1U << 25)) kprintf("  SSE\n");
+    if (edx & (1U << 26)) kprintf("  SSE2\n");
+    if (ecx & (1U << 0)) kprintf("  SSE3\n");
+    if (ecx & (1U << 25)) kprintf("  AES-NI\n");
 }
 #endif
 
 
 static void command_reboot() {
     kprintf("Restarting C.O.N.D.R...\n");
+    if (storage::persistence::available()) storage::persistence::sync();
     arch::cli();
     for (u32 attempt = 0; attempt < 100000; ++attempt)
         if ((arch::inb(0x64) & 0x02) == 0) break;
@@ -298,9 +344,17 @@ static void command_reboot() {
     arch::halt_forever();
 }
 
+static void acpi_poweroff() {
+    // QEMU q35 exposes PM1a_CNT at 0x604; i440fx uses 0xB004.
+    arch::outw(0x604, 0x2000);
+    arch::outw(0xB004, 0x2000);
+    arch::halt_forever();
+}
+
 static void command_sd(TokenList tokens) {
     bool force = false;
     bool halt_only = false;
+    bool poweroff = false;
 
     // Parse flags
     for (usize i = 1; i < tokens.count; ++i) {
@@ -309,7 +363,10 @@ static void command_sd(TokenList tokens) {
         } else if (equal(tokens.value[i], "--halt") || equal(tokens.value[i], "-h")) {
             halt_only = true;
         } else if (equal(tokens.value[i], "--poweroff") || equal(tokens.value[i], "-p")) {
-            // Power off flag - just halt for now
+            poweroff = true;
+        } else {
+            kprintf("sd: unknown option %s\n", tokens.value[i]);
+            return;
         }
     }
 
@@ -317,19 +374,14 @@ static void command_sd(TokenList tokens) {
     if (force) kprintf(" (forced)");
     kprintf("\n");
 
+    if (storage::persistence::available()) storage::persistence::sync();
+
     arch::cli();
 
-    if (halt_only) {
-        // Just halt the CPU
-        arch::halt_forever();
-    } else {
-        // Perform shutdown sequence
-        // Write shutdown command to PM1a event register (ACPI)
-        // Port 0x1000 is a common address for the PM1 control block
-        // But we'll just halt the CPU for this implementation
-        arch::outb(0x64, 0xFE);
+    if (halt_only && !poweroff) {
         arch::halt_forever();
     }
+    acpi_poweroff();
 }
 
 static void execute(const char* input) {
@@ -369,7 +421,7 @@ static void execute(const char* input) {
         nvmfs::NodeId id;
         nvmfs::Error failure;
         if (!nvmfs::create(type, tokens.value[2], g_context, id, failure)) error("new", failure);
-        else kprintf("created: %#lx\n", id);
+        else kprintf("created: %06lx\n", id);
         return;
     }
     if (equal(command, "find")) { command_find(tokens); return; }
@@ -386,8 +438,13 @@ static void execute(const char* input) {
         nvmfs::Error failure;
         if (nvmfs::selftest(checks, failure)) kprintf("NVMFS check: %u passed\n", checks);
         else error("check", failure);
+        ipc::Error ipc_failure;
+        if (ipc::selftest(checks, ipc_failure)) kprintf("IPC check: %u passed\n", checks);
+        else kprintf("IPC check: %s\n", ipc::error_text(ipc_failure));
         return;
     }
+    if (equal(command, "sync")) { command_sync(); return; }
+    if (equal(command, "kbd-demo")) { command_kbd_demo(); return; }
     if (equal(command, "test")) {
         if (nord::test::TestSuite::run_all()) {
             kprintf("[test] All tests passed!\n");

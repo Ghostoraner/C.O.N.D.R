@@ -49,8 +49,9 @@ def monitor_command(monitor, command):
 
 
 def send_line(monitor, line):
+    special = {" ": "spc", "-": "minus"}
     for character in line:
-        key = "spc" if character == " " else character
+        key = special.get(character, character)
         monitor_command(monitor, f"sendkey {key} 35")
         time.sleep(0.025)
     monitor_command(monitor, "sendkey ret 35")
@@ -125,14 +126,16 @@ def main():
         process, monitor = start_qemu(iso, disk, log, monitor_path)
         try:
             wait_for_log(process, log, "C.O.N.D.R user-mode IPC: pong")
-            wait_for_log(process, log, "kbd-demo: ready")
+            wait_for_log(process, log, "condr:/# ")
 
-            # Syscall 8 coverage: the kbd-demo user task reads five characters
-            # one at a time and echoes each of them back.
+            # Syscall 8 coverage: launch the keyboard demo on demand. It takes
+            # focus, reads five characters one at a time and echoes them back.
+            send_line(monitor, "kbd-demo")
+            wait_for_log(process, log, "kbd-demo: ready")
             send_keys(monitor, "hello")
             wait_for_log(process, log, "kbd-demo: done")
-
             wait_for_log(process, log, "condr:/# ")
+
             send_line(monitor, "touch persisted")
             text = wait_for_log(process, log, "created: ")
             match = re.search(r"created: ([0-9a-f]{6})", text)
@@ -164,6 +167,8 @@ def main():
             checks = wait_for_log(process, log, "IPC check: 7 passed")
             if "NVMFS check: 6 passed" not in checks:
                 raise RuntimeError(f"NVMFS self-test failed\n{checks}")
+            send_line(monitor, "test")
+            wait_for_log(process, log, "[test] All tests passed!")
             print(f"QEMU integration passed: short ID {object_id}, IPC, and disk restore")
         finally:
             stop_qemu(process, monitor)

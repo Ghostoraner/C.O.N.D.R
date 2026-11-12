@@ -67,6 +67,10 @@ void dispatch(Registers* registers) {
                 return;
             }
             success = ipc::register_service(scheduler::current_id(), name, node_id, handle, error);
+            if (!success) {
+                nvmfs::Error cleanup_error;
+                nvmfs::erase(node_id, cleanup_error);
+            }
         } else {
             success = ipc::connect(scheduler::current_id(), name, handle, error);
         }

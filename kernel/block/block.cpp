@@ -16,7 +16,7 @@ bool register_device(const BlockDevice& device) {
     if (g_device_count >= MAX_DEVICES) return false;
     if (device_by_name(device.name)) return false;
     g_devices[g_device_count++] = device;
-    kprintf("[block] registered device '%s'\\n", device.name);
+    kprintf("[block] registered device '%s'\n", device.name);
     return true;
 }
 

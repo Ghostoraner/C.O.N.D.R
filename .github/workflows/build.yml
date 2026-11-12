@@ -14,7 +14,14 @@ jobs:
       - name: Install build tools
         run: |
           sudo apt-get update
-          sudo apt-get install -y g++ binutils nasm make
+          sudo apt-get install -y g++ binutils nasm make git python3 \
+            xorriso qemu-system-x86
 
       - name: Build kernel
         run: make kernel
+
+      - name: Build ISO
+        run: make iso
+
+      - name: Run QEMU integration test
+        run: make test

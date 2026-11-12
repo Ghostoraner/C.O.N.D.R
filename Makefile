@@ -37,7 +37,7 @@ CXXFLAGS := \
 ASFLAGS  := -f elf64 -g -F dwarf
 
 LDFLAGS  := \
-	-nostdlib -static -z max-page-size=0x1000 \
+	-nostdlib -static -z max-page-size=0x1000 -z noexecstack \
 	-T kernel/linker.ld
 
 # Flags for user-mode ELF images. noexecstack marks the GNU stack
@@ -78,7 +78,7 @@ $(BUILD)/%.o: %.asm
 
 $(BUILD)/%.bin.o: %.bin
 	@mkdir -p $(dir $@)
-	@$(LD) -r -b binary -o $@ $<
+	@$(LD) -r -b binary -z noexecstack -o $@ $<
 	@echo "  BIN   $<"
 
 $(USER_ELF): $(BUILD)/user/demo.o user/linker.ld
@@ -87,7 +87,7 @@ $(USER_ELF): $(BUILD)/user/demo.o user/linker.ld
 
 $(USER_OBJ): $(USER_ELF)
 	@mkdir -p $(dir $@)
-	$(LD) -r -b binary -o $@ $<
+	$(LD) -r -b binary -z noexecstack -o $@ $<
 
 $(KBD_ELF): $(BUILD)/user/kbd_demo.o user/linker.ld
 	@mkdir -p $(dir $@)
@@ -95,7 +95,7 @@ $(KBD_ELF): $(BUILD)/user/kbd_demo.o user/linker.ld
 
 $(KBD_OBJ): $(KBD_ELF)
 	@mkdir -p $(dir $@)
-	$(LD) -r -b binary -o $@ $<
+	$(LD) -r -b binary -z noexecstack -o $@ $<
 
 -include $(DEPS)
 

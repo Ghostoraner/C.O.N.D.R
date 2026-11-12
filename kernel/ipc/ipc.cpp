@@ -96,12 +96,6 @@ static bool create_capability(u32 task_id, u16 endpoint, u8 rights, Handle& hand
     return true;
 }
 
-[[maybe_unused]] static Service* service_by_node(nvmfs::NodeId node_id) {
-    for (usize i = 0; i < MAX_SERVICES; ++i)
-        if (g_services[i].active && g_services[i].node_id == node_id) return &g_services[i];
-    return nullptr;
-}
-
 void init() {
     memset(g_endpoints, 0, sizeof(g_endpoints));
     memset(g_services, 0, sizeof(g_services));
@@ -204,8 +198,6 @@ bool accept(u32 owner, Handle listener, Handle& connection, Error& error) {
     Service* service = nullptr;
     for (usize i = 0; i < MAX_SERVICES; ++i) {
         if (g_services[i].active && g_services[i].endpoint == capability->endpoint) {
-            service = &g_services[i];
-            break;
             service = &g_services[i];
             break;
         }

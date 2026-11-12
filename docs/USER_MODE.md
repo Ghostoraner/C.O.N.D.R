@@ -29,7 +29,8 @@ User programs invoke `int 0x80` with the syscall number in `RAX`:
 | `5` | `service_accept` | `RDI` listener handle | connected endpoint handle, or `-11` |
 | `6` | `ipc_send` | `RDI` handle, `RSI` data, `RDX` length (0-64) | bytes sent, or negative error |
 | `7` | `ipc_receive` | `RDI` handle, `RSI` output buffer, `RDX` capacity (at least 64) | message length, or `-11` |
-| `8` | `read_char` | `RDI` user buffer pointer, `RSI` capacity (1-256) | `1` byte written, `-1` invalid pointer/capacity, `-11` no waiter available |
+| `8` | `read_char` | `RDI` user buffer pointer, `RSI` capacity (1-256) | `1` byte written, `-1` invalid pointer/capacity, `-11` caller lacks keyboard focus |
+| `9` | `kbd_focus` | `RDI != 0` takes focus, `RDI == 0` returns it to the console | `0`, or `-11` if the request was rejected |
 
 The kernel validates user ranges by walking the current address space before
 copying data. Service names are indexed in NVMFS, while IPC handles are bound to
@@ -44,8 +45,13 @@ suitable for untrusted software.
 `read_char` (syscall 8) blocks the caller until a typed character is available,
 then writes exactly one byte to the user buffer and returns `1`. Arrow keys,
 Home/End and Delete events are discarded; only `Key::character` events are
-returned. Only one reader task is supported at a time: the reader registers
-itself as the keyboard waiter before blocking, so a keypress wakes the right
-task and a wakeup can never be lost even if the interrupt arrives between the
-queue check and the sleep. Events dropped because the ring buffer overflowed are
-counted and shown by the `sys` shell command.
+returned. A task must hold keyboard focus (syscall 9) before calling
+`read_char`; otherwise it fails immediately with `-11`. Taking focus flushes
+keys typed earlier for the console, and releasing focus wakes the console.
+
+Several tasks may wait at once: each reader registers itself in the waiter list
+before blocking, so a keypress wakes the right task and a wakeup can never be
+lost even if the interrupt arrives between the queue check and the sleep. Only
+the task that owns focus consumes events, and each event is delivered to exactly
+one reader. Events dropped because the ring buffer overflowed are counted and
+shown by the `sys` shell command.

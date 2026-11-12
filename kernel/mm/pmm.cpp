@@ -90,7 +90,11 @@ paddr_t alloc_pages(usize count) {
 paddr_t alloc_page() { return alloc_pages(1); }
 
 void free_pages(paddr_t addr, usize count) {
-    u64 idx = addr / PAGE_SIZE;
+    if (!count || (addr & (PAGE_SIZE - 1)))
+        panic("pmm: invalid free address %p", (void*)addr);
+    const u64 idx = addr / PAGE_SIZE;
+    if (!idx || idx >= g_total_pages || count > g_total_pages - idx)
+        panic("pmm: free outside physical memory %p", (void*)addr);
     for (usize i = 0; i < count; ++i) {
         if (!bit_test(idx + i)) panic("pmm: double free of page %p", (void*)addr);
         bit_clear(idx + i);

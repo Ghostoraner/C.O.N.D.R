@@ -81,8 +81,16 @@ static bool memory_pmm_allocate_page(usize) {
 static bool memory_address_space_create(usize) {
     mm::address_space::AddressSpace space;
     if (!mm::address_space::create(space)) return false;
-    bool mapped = mm::address_space::map_page(space, 0x1000, 0, true);
-    if (!mapped) return false;
+    const paddr_t physical = mm::pmm::alloc_page();
+    if (!physical) {
+        mm::address_space::destroy(space);
+        return false;
+    }
+    if (!mm::address_space::map_page(space, space.user_base + 0x1000, physical, true)) {
+        mm::pmm::free_page(physical);
+        mm::address_space::destroy(space);
+        return false;
+    }
     mm::address_space::destroy(space);
     return true;
 }
@@ -123,9 +131,12 @@ static bool keyboard_full_queue_drops(usize) {
     while (test_enqueue(event)) ++queued;
     if (queued == 0) return false;
 
-    // The ring keeps one slot free, so the next enqueue must drop.
+    // The ring keeps one slot free. The enqueue that filled the last slot
+    // already counted one drop; another attempt must count one more.
+    const u64 after_fill = test_dropped_count();
+    if (after_fill != before + 1) return false;
     if (test_enqueue(event)) return false;
-    if (test_dropped_count() != before + 1) return false;
+    if (test_dropped_count() != after_fill + 1) return false;
 
     // Drain the queue so later tests start from a clean state.
     while (try_get_event(event)) {}
@@ -177,7 +188,7 @@ static bool keyboard_focus_rules(usize) {
 static bool address_space_copy_invalid(usize) {
     mm::address_space::AddressSpace space;
     if (!mm::address_space::create(space)) return false;
-    if (!mm::address_space::allocate_page(space, 0x1000, true)) {
+    if (!mm::address_space::allocate_page(space, space.user_base + 0x1000, true)) {
         mm::address_space::destroy(space);
         return false;
     }

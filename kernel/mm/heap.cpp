@@ -90,8 +90,10 @@ void* kmalloc(usize size) {
 }
 
 void* kcalloc(usize count, usize size) {
-    void* p = kmalloc(count * size);
-    if (p) memset(p, 0, count * size);
+    if (count && size > ~static_cast<usize>(0) / count) return nullptr;
+    const usize total = count * size;
+    void* p = kmalloc(total);
+    if (p) memset(p, 0, total);
     return p;
 }
 

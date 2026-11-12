@@ -97,6 +97,8 @@ The guest uses short, object-oriented commands rather than POSIX commands:
 | `stat ID`, `rm ID` | Inspect or delete an object |
 | `tag ID KEY VALUE`, `untag ID KEY VALUE` | Add or remove a tag |
 | `put ID "TEXT"`, `add ID "TEXT"`, `get ID` | Replace, append or read a stream |
+| `sync` | Write the current NVMFS snapshot to disk |
+| `kbd-demo` | Launch the keyboard reader demo on demand |
 | `test` | Run automated kernel unit test suite |
 | `memtest` | Execute memory and heap subsystem checks |
 | `storagetest` | Test block device storage and snapshots |
@@ -143,7 +145,8 @@ caller does not hold focus. While a user task holds focus, console input is
 suspended. Focus is released automatically when the task exits.
 
 The `kbd-demo` program (`user/kbd_demo.asm`) shows the flow: it takes focus,
-reads five characters, echoes them, and returns focus to the console.
+reads five characters, echoes them, and returns focus to the console. It is not
+started automatically; run it from the console with `kbd-demo`.
 
 ## Debugging
 
@@ -248,6 +251,8 @@ NVMFS расшифровывается как **Node Vector Memory File System**
 | `stat ID`, `rm ID` | Показать или удалить объект |
 | `tag ID KEY VALUE`, `untag ID KEY VALUE` | Добавить или удалить тег |
 | `put ID "TEXT"`, `add ID "TEXT"`, `get ID` | Заменить, дописать или прочитать поток |
+| `sync` | Записать текущий снапшот NVMFS на диск |
+| `kbd-demo` | Запустить демонстрацию чтения клавиатуры по требованию |
 | `test` | Запустить набор автоматических юнит-тестов ядра |
 | `memtest` | Выполнить проверки подсистемы памяти и кучи |
 | `storagetest` | Проверить блочное хранилище и снапшоты |
@@ -295,7 +300,8 @@ User-программы входят в ядро через `int 0x80`. Номе
 консоль приостановлен. Фокус снимается автоматически при завершении задачи.
 
 Программа `kbd-demo` (`user/kbd_demo.asm`) показывает весь сценарий: берёт
-фокус, читает пять символов, повторяет их и возвращает фокус консоли.
+фокус, читает пять символов, повторяет их и возвращает фокус консоли. Она не
+запускается автоматически; запусти её из консоли командой `kbd-demo`.
 
 ## Отладка
 
