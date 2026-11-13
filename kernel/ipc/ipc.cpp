@@ -85,6 +85,15 @@ static bool pending_push(u16 listener_index, u16 connection_index) {
     return true;
 }
 
+static bool pending_push_front(u16 listener_index, u16 connection_index) {
+    Endpoint& listener = g_endpoints[listener_index];
+    if (listener.pending_count >= QUEUE_DEPTH) return false;
+    listener.pending_head = static_cast<u8>((listener.pending_head + QUEUE_DEPTH - 1) % QUEUE_DEPTH);
+    listener.pending[listener.pending_head] = connection_index;
+    ++listener.pending_count;
+    return true;
+}
+
 static bool pending_pop(u16 listener_index, u16& connection_index) {
     Endpoint& listener = g_endpoints[listener_index];
     if (listener.pending_count == 0) return false;
@@ -268,7 +277,7 @@ static bool accept_locked(u32 owner, Handle listener, Handle& connection, Error&
     u16 server_index = 0;
     Endpoint* server = allocate_endpoint(owner, false, server_index);
     if (!server) {
-        pending_push(service->endpoint, client_index);
+        pending_push_front(service->endpoint, client_index);
         error = Error::table_full;
         return false;
     }
@@ -280,7 +289,7 @@ static bool accept_locked(u32 owner, Handle listener, Handle& connection, Error&
     if (!create_capability(owner, server_index, RIGHT_SEND | RIGHT_RECEIVE, new_handle)) {
         g_endpoints[client_index].peer = 0xFFFF;
         memset(server, 0, sizeof(Endpoint));
-        pending_push(service->endpoint, client_index);
+        pending_push_front(service->endpoint, client_index);
         error = Error::table_full;
         return false;
     }

@@ -1,6 +1,7 @@
 #include <nord/types.hpp>
 #include <nord/limine.hpp>
 #include <arch/x86_64/io.hpp>
+#include <arch/x86_64/cpu/fpu.hpp>
 #include <arch/x86_64/cpu/gdt.hpp>
 #include <arch/x86_64/cpu/idt.hpp>
 #include <arch/x86_64/cpu/pic.hpp>
@@ -100,6 +101,7 @@ extern "C" [[noreturn]] void kernel_main() {
 
     arch::gdt::init();
     arch::idt::init();
+    arch::fpu::init();
     arch::pic::init();
     arch::idt::set_handler(3, on_breakpoint);
     arch::idt::allow_user(0x80);

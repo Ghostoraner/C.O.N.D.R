@@ -62,6 +62,9 @@ static Entry g_gdt[7] = {
 static Pointer g_pointer;
 static TaskStateSegment g_tss;
 
+static constexpr usize DOUBLE_FAULT_STACK_SIZE = 16 * 1024;
+alignas(16) static u8 g_double_fault_stack[DOUBLE_FAULT_STACK_SIZE];
+
 }
 
 extern "C" void gdt_flush(void* ptr);
@@ -71,6 +74,7 @@ namespace nord::arch::gdt {
 void init() {
     memset(&g_tss, 0, sizeof(g_tss));
     g_tss.iomap_base = sizeof(g_tss);
+    g_tss.ist1 = reinterpret_cast<u64>(g_double_fault_stack) + DOUBLE_FAULT_STACK_SIZE;
     TssDescriptor descriptor{};
     const u64 base = reinterpret_cast<u64>(&g_tss);
     const u32 limit = sizeof(g_tss) - 1;

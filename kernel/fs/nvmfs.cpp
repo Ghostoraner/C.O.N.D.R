@@ -5,6 +5,10 @@
 
 namespace nord::nvmfs {
 
+// IRQ handlers must never take this lock. RecursiveSpinLock identifies its
+// owner through scheduler::current_id(), which in an interrupt reports the
+// interrupted task; the handler would then be treated as a recursive owner and
+// corrupt NVMFS state.
 static sync::RecursiveSpinLock g_lock;
 
 Lock::Lock() { g_lock.lock(); }

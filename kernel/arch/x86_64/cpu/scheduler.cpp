@@ -1,4 +1,5 @@
 #include <arch/x86_64/cpu/scheduler.hpp>
+#include <arch/x86_64/cpu/fpu.hpp>
 #include <arch/x86_64/cpu/gdt.hpp>
 #include <arch/x86_64/dev/keyboard.hpp>
 #include <arch/x86_64/io.hpp>
@@ -19,6 +20,7 @@ struct Task {
     State state;
     Entry entry;
     Registers* frame;
+    alignas(fpu::STATE_ALIGN) u8 fpu_state[fpu::STATE_SIZE];
     void* stack;
     bool user_mode;
     mm::address_space::AddressSpace space;
@@ -31,6 +33,7 @@ static usize g_count;
 static u32 g_next_id;
 static Task* g_current;
 static Registers* g_boot_frame;
+alignas(fpu::STATE_ALIGN) static u8 g_boot_fpu[fpu::STATE_SIZE];
 static Task* g_retired_task;
 static bool g_running;
 static u32 g_preempt_depth;
@@ -71,6 +74,7 @@ static Task* allocate_task(const char* name, u32& id) {
     task.active = true;
     task.state = State::ready;
     task.stack = stack;
+    fpu::reset(task.fpu_state);
     const usize length = strlen(name) < NAME_SIZE - 1 ? strlen(name) : NAME_SIZE - 1;
     memcpy(task.name, name, length);
     task.name[length] = '\0';
@@ -115,6 +119,7 @@ void init() {
     g_next_id = 1;
     g_current = nullptr;
     g_boot_frame = nullptr;
+    fpu::reset(g_boot_fpu);
     g_retired_task = nullptr;
     g_running = false;
     g_preempt_depth = 0;
@@ -124,13 +129,18 @@ void init() {
 
 bool create(const char* name, Entry entry, u32& id) {
     if (!entry) return false;
+    preempt_disable();
     Task* task = allocate_task(name, id);
-    if (!task) return false;
+    if (!task) {
+        preempt_enable();
+        return false;
+    }
     task->entry = entry;
     u64 stack_top = reinterpret_cast<u64>(task->stack) + STACK_SIZE;
     stack_top = (stack_top & ~static_cast<u64>(0xF)) - sizeof(u64);
     initial_frame(*task, reinterpret_cast<u64>(task_bootstrap), gdt::KERNEL_CODE,
                   stack_top, gdt::KERNEL_DATA);
+    preempt_enable();
     return true;
 }
 
@@ -138,12 +148,17 @@ bool create_user(const char* name, mm::address_space::AddressSpace& space,
                  u64 entry, u64 user_stack, u32& id) {
     if (!space.root || !mm::address_space::contains(space, entry, 1)
         || !mm::address_space::contains(space, user_stack - 1, 1)) return false;
+    preempt_disable();
     Task* task = allocate_task(name, id);
-    if (!task) return false;
+    if (!task) {
+        preempt_enable();
+        return false;
+    }
     task->user_mode = true;
     task->space = space;
     space.root = 0;
     initial_frame(*task, entry, gdt::USER_CODE, user_stack, gdt::USER_DATA);
+    preempt_enable();
     return true;
 }
 
@@ -162,9 +177,11 @@ Registers* schedule(Registers* frame) {
 
     Task* previous = g_current;
     if (previous) {
+        fpu::save(previous->fpu_state);
         if (previous->state == State::running) previous->state = State::ready;
         if (previous->state != State::exited) previous->frame = frame;
     } else {
+        fpu::save(g_boot_fpu);
         g_boot_frame = frame;
     }
 
@@ -175,6 +192,7 @@ Registers* schedule(Registers* frame) {
         if ((arch::read_cr3() & 0x000FFFFFFFFFF000ULL) != g_kernel_cr3)
             arch::write_cr3(g_kernel_cr3);
         gdt::set_kernel_stack(g_boot_rsp0);
+        fpu::restore(g_boot_fpu);
         return g_boot_frame ? g_boot_frame : frame;
     }
 
@@ -188,6 +206,7 @@ Registers* schedule(Registers* frame) {
         arch::write_cr3(next_cr3);
     const u64 kernel_stack_top = reinterpret_cast<u64>(next->stack) + STACK_SIZE;
     gdt::set_kernel_stack(kernel_stack_top);
+    fpu::restore(next->fpu_state);
     return next->frame;
 }
 
