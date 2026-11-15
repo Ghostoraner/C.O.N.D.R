@@ -6,4 +6,5 @@
 *.iso
 *.img
 .gdb_history
-*.log
+*.log__pycache__/
+*.pyc
