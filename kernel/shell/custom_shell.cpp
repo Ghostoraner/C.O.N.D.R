@@ -112,6 +112,7 @@ static void print_help() {
     kprintf("  put ID \"TEXT\" | add ID \"TEXT\" | get ID\n");
     kprintf("  sync               write the NVMFS snapshot to disk\n");
     kprintf("  kbd-demo           run the keyboard reader demo on demand\n");
+    kprintf("  ist-test           overflow the kernel stack to test double-fault IST\n");
     kprintf("  sys | check | ver | reboot | sd | help | cpuid\n");
     kprintf("  ps                 list kernel tasks\n");
 }
@@ -340,6 +341,10 @@ static void command_cpuid() {
 #endif
 
 
+static void command_ist_test() {
+    nord::test::trigger_kernel_stack_overflow();
+}
+
 static void command_reboot() {
     kprintf("Restarting C.O.N.D.R...\n");
     if (storage::persistence::available()) storage::persistence::sync();
@@ -452,6 +457,7 @@ static void execute(const char* input) {
     }
     if (equal(command, "sync")) { command_sync(); return; }
     if (equal(command, "kbd-demo")) { command_kbd_demo(); return; }
+    if (equal(command, "ist-test")) { command_ist_test(); return; }
     if (equal(command, "test")) {
         if (nord::test::TestSuite::run_all()) {
             kprintf("[test] All tests passed!\n");

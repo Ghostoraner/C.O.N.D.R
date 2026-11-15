@@ -319,6 +319,27 @@ static bool address_space_copy_invalid(usize) {
     return true;
 }
 
+namespace {
+
+// Setting RSP to an invalid value makes the CPU fault while trying to push
+// the exception frame onto that same stack. Delivering the second fault on
+// the broken stack is impossible, so it escalates to #DF and the IST entry
+// takes over. This exercises the same entry path as a real stack overflow,
+// but deterministically and without scribbling over adjacent heap memory.
+[[noreturn]] __attribute__((naked)) void stack_overflow_trap() {
+    __asm__ __volatile__(
+        "movq $0, %rsp\n\t"
+        "pushq %rax\n\t"
+        "ud2\n\t");
+}
+
+} // namespace
+
+[[noreturn]] void trigger_kernel_stack_overflow() {
+    kprintf("[ist] exhausting the kernel stack...\n");
+    stack_overflow_trap();
+}
+
 // Auto-registration at static initialization
 static bool register_once = []() -> bool {
     TestSuite::register_test("memory_heap_allocate_deallocate", 3, &memory_heap_allocate_deallocate);

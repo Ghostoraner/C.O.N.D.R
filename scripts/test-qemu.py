@@ -169,7 +169,20 @@ def main():
                 raise RuntimeError(f"NVMFS self-test failed\n{checks}")
             send_line(monitor, "test")
             wait_for_log(process, log, "[test] All tests passed!")
-            print(f"QEMU integration passed: short ID {object_id}, IPC, and disk restore")
+
+            # Deliberate kernel-stack exhaustion must be reported through the
+            # double-fault IST handler and halt the machine, not reset it.
+            send_line(monitor, "ist-test")
+            fault = wait_for_log(process, log, "*** C.O.N.D.R. PANIC ***")
+            time.sleep(0.5)
+            if "Double Fault" not in fault:
+                raise RuntimeError(f"stack overflow did not report a double fault\n{fault}")
+            if process.poll() is not None:
+                raise RuntimeError("QEMU exited after the double fault (possible reset)")
+            if fault.count("kernel booting") != 1:
+                raise RuntimeError("machine rebooted after the double fault")
+            print(f"QEMU integration passed: short ID {object_id}, IPC, disk restore, "
+                  "and double-fault IST")
         finally:
             stop_qemu(process, monitor)
 

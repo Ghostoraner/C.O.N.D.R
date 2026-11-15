@@ -26,4 +26,8 @@ public:
     static usize get_count();
 };
 
+// Deliberately runs off the end of the kernel stack so the CPU raises a
+// double fault through the IST handler. Never returns.
+[[noreturn]] void trigger_kernel_stack_overflow();
+
 } // namespace nord::test
