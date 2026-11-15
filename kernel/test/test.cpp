@@ -3,6 +3,7 @@
 #include <arch/x86_64/cpu/scheduler.hpp>
 #include <fs/nvmfs.hpp>
 #include <lib/print.hpp>
+#include <lib/string.hpp>
 #include <mm/address_space.hpp>
 #include <mm/heap.hpp>
 #include <mm/pmm.hpp>
@@ -97,6 +98,107 @@ static bool memory_address_space_create(usize) {
 
 static bool scheduler_switch_count(usize) {
     return nord::arch::scheduler::count() != 0;
+}
+
+namespace {
+
+constexpr usize XMM_TEST_ITERATIONS = 8;
+constexpr u64 XMM_TEST_WAIT_YIELDS = 200000;
+
+struct alignas(16) XmmTaskState {
+    u8 pattern[16];
+    volatile u64 progress;
+    volatile u64 mismatches;
+    volatile bool done;
+    volatile bool stop;
+};
+
+XmmTaskState g_xmm_tasks[2];
+
+// Load a pattern into xmm0, let the scheduler switch away and back, then
+// capture xmm0. The yield stub itself does not touch SSE registers, so any
+// value other than the pattern means the kernel failed to preserve XMM state.
+bool xmm_yield_roundtrip(const u8* expected) {
+    alignas(16) u8 observed[16];
+    void (*const yield_fn)() = &nord::arch::scheduler::yield;
+    asm volatile(
+        "movdqu (%[pattern]), %%xmm0\n\t"
+        "call *%[yield]\n\t"
+        "movdqu %%xmm0, (%[observed])\n\t"
+        :
+        : [pattern] "r"(expected), [observed] "r"(observed), [yield] "r"(yield_fn)
+        // The kernel is built with -mno-sse, so the compiler never keeps live
+        // values in XMM registers and they need not appear in the clobber list.
+        : "rax", "rcx", "rdx", "rsi", "rdi", "r8", "r9", "r10", "r11",
+          "memory", "cc");
+    return memcmp(observed, expected, sizeof(observed)) == 0;
+}
+
+void xmm_task_run(XmmTaskState& state) {
+    for (usize i = 0; i < XMM_TEST_ITERATIONS; ++i) {
+        if (state.stop) break;
+        if (!xmm_yield_roundtrip(state.pattern)) state.mismatches = state.mismatches + 1;
+        state.progress = state.progress + 1;
+    }
+    state.done = true;
+    nord::arch::scheduler::exit_current();
+}
+
+void xmm_task_a() { xmm_task_run(g_xmm_tasks[0]); }
+void xmm_task_b() { xmm_task_run(g_xmm_tasks[1]); }
+
+} // namespace
+
+static bool fpu_xmm_context_switch(usize) {
+    using nord::arch::scheduler::create;
+    using nord::arch::scheduler::current_id;
+    using nord::arch::scheduler::yield;
+
+    // The test needs the scheduler to be running, otherwise it is skipped.
+    if (current_id() == 0) return true;
+
+    static constexpr u8 pattern_a[16] = {
+        0x00, 0x11, 0x22, 0x33, 0x44, 0x55, 0x66, 0x77,
+        0x88, 0x99, 0xAA, 0xBB, 0xCC, 0xDD, 0xEE, 0xFF};
+    static constexpr u8 pattern_b[16] = {
+        0xFF, 0xEE, 0xDD, 0xCC, 0xBB, 0xAA, 0x99, 0x88,
+        0x77, 0x66, 0x55, 0x44, 0x33, 0x22, 0x11, 0x00};
+
+    XmmTaskState& a = g_xmm_tasks[0];
+    XmmTaskState& b = g_xmm_tasks[1];
+    memcpy(a.pattern, pattern_a, sizeof(a.pattern));
+    memcpy(b.pattern, pattern_b, sizeof(b.pattern));
+    a.progress = 0;
+    a.mismatches = 0;
+    a.done = false;
+    a.stop = false;
+    b.progress = 0;
+    b.mismatches = 0;
+    b.done = false;
+    b.stop = false;
+
+    u32 id_a = 0;
+    u32 id_b = 0;
+    if (!create("fpu-xmm-a", &xmm_task_a, id_a)) return false;
+    if (!create("fpu-xmm-b", &xmm_task_b, id_b)) {
+        a.stop = true;
+        for (usize i = 0; i < 64; ++i) yield();
+        return false;
+    }
+
+    for (u64 spin = 0; spin < XMM_TEST_WAIT_YIELDS && !(a.done && b.done); ++spin) {
+        yield();
+    }
+
+    if (!(a.done && b.done)) {
+        a.stop = true;
+        b.stop = true;
+        for (usize i = 0; i < 64; ++i) yield();
+        return false;
+    }
+
+    return a.mismatches == 0 && b.mismatches == 0
+        && a.progress == XMM_TEST_ITERATIONS && b.progress == XMM_TEST_ITERATIONS;
 }
 
 static bool keyboard_queue_order(usize) {
@@ -223,6 +325,7 @@ static bool register_once = []() -> bool {
     TestSuite::register_test("memory_pmm_allocate_page", 3, &memory_pmm_allocate_page);
     TestSuite::register_test("memory_address_space_create", 3, &memory_address_space_create);
     TestSuite::register_test("scheduler_switch_count", 5, &scheduler_switch_count);
+    TestSuite::register_test("fpu_xmm_context_switch", 1, &fpu_xmm_context_switch);
     TestSuite::register_test("keyboard_queue_order", 5, &keyboard_queue_order);
     TestSuite::register_test("keyboard_full_queue_drops", 3, &keyboard_full_queue_drops);
     TestSuite::register_test("keyboard_waiter_list", 3, &keyboard_waiter_list);
