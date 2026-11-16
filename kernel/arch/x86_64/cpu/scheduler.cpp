@@ -6,7 +6,7 @@
 #include <ipc/ipc.hpp>
 #include <lib/string.hpp>
 #include <mm/address_space.hpp>
-#include <mm/heap.hpp>
+#include <mm/task_stack.hpp>
 
 namespace nord::arch::scheduler {
 
@@ -65,7 +65,7 @@ static Task* allocate_task(const char* name, u32& id) {
     usize slot = 0;
     while (slot < MAX_TASKS && g_tasks[slot].active) ++slot;
     if (slot == MAX_TASKS) return nullptr;
-    void* stack = mm::heap::kmalloc(STACK_SIZE);
+    void* stack = mm::task_stack::allocate();
     if (!stack) return nullptr;
 
     Task& task = g_tasks[slot];
@@ -85,7 +85,7 @@ static Task* allocate_task(const char* name, u32& id) {
 
 static Registers* initial_frame(Task& task, u64 entry, u64 code_selector,
                                 u64 stack_pointer, u64 data_selector) {
-    u64 kernel_stack_top = reinterpret_cast<u64>(task.stack) + STACK_SIZE;
+    u64 kernel_stack_top = mm::task_stack::top(task.stack);
     kernel_stack_top = (kernel_stack_top & ~static_cast<u64>(0xF)) - sizeof(u64);
     task.frame = reinterpret_cast<Registers*>(kernel_stack_top - INITIAL_FRAME_WORDS * sizeof(u64));
     memset(task.frame, 0, INITIAL_FRAME_WORDS * sizeof(u64));
@@ -107,7 +107,7 @@ static void reap_retired_task() {
     // stale waiter registration behind.
     keyboard::clear_waiter(task->id);
     if (task->user_mode) mm::address_space::destroy(task->space);
-    if (task->stack) mm::heap::kfree(task->stack);
+    if (task->stack) mm::task_stack::release(task->stack);
     memset(task, 0, sizeof(*task));
     --g_count;
     g_retired_task = nullptr;
@@ -125,6 +125,7 @@ void init() {
     g_preempt_depth = 0;
     g_kernel_cr3 = arch::read_cr3() & 0x000FFFFFFFFFF000ULL;
     asm volatile("mov %%rsp, %0" : "=r"(g_boot_rsp0));
+    mm::task_stack::init(STACK_SIZE);
 }
 
 bool create(const char* name, Entry entry, u32& id) {
@@ -136,7 +137,7 @@ bool create(const char* name, Entry entry, u32& id) {
         return false;
     }
     task->entry = entry;
-    u64 stack_top = reinterpret_cast<u64>(task->stack) + STACK_SIZE;
+    u64 stack_top = mm::task_stack::top(task->stack);
     stack_top = (stack_top & ~static_cast<u64>(0xF)) - sizeof(u64);
     initial_frame(*task, reinterpret_cast<u64>(task_bootstrap), gdt::KERNEL_CODE,
                   stack_top, gdt::KERNEL_DATA);
@@ -204,7 +205,7 @@ Registers* schedule(Registers* frame) {
     const paddr_t next_cr3 = next->user_mode ? next->space.root : g_kernel_cr3;
     if ((arch::read_cr3() & 0x000FFFFFFFFFF000ULL) != next_cr3)
         arch::write_cr3(next_cr3);
-    const u64 kernel_stack_top = reinterpret_cast<u64>(next->stack) + STACK_SIZE;
+    const u64 kernel_stack_top = mm::task_stack::top(next->stack);
     gdt::set_kernel_stack(kernel_stack_top);
     fpu::restore(next->fpu_state);
     return next->frame;

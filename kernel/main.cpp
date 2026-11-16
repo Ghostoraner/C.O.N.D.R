@@ -4,6 +4,7 @@
 #include <arch/x86_64/cpu/fpu.hpp>
 #include <arch/x86_64/cpu/gdt.hpp>
 #include <arch/x86_64/cpu/idt.hpp>
+#include <arch/x86_64/cpu/nx.hpp>
 #include <arch/x86_64/cpu/pic.hpp>
 #include <arch/x86_64/cpu/scheduler.hpp>
 #include <arch/x86_64/dev/serial.hpp>
@@ -102,6 +103,7 @@ extern "C" [[noreturn]] void kernel_main() {
     arch::gdt::init();
     arch::idt::init();
     arch::fpu::init();
+    kprintf("[cpu] NX %s\n", arch::init_nx() ? "enabled" : "unsupported");
     arch::pic::init();
     arch::idt::set_handler(3, on_breakpoint);
     arch::idt::allow_user(0x80);

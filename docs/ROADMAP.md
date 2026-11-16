@@ -25,7 +25,7 @@ planned unless marked as implemented.
 - Add ACPI discovery and local APIC support, while retaining a tested legacy
   PIC fallback for emulators and older machines
 - Make the single-CPU spinlocks SMP-ready (IRQ-safe acquisition and per-CPU state) before enabling multiple CPUs
-- Add NX page protections, guard pages, and stronger user-copy validation
+- ~~Add NX page protections, guard pages, and stronger user-copy validation~~ (NX data/stack pages, task-stack guard pages, and symbol-resolved panic dumps implemented)
 
 ## User mode and services
 
@@ -49,6 +49,6 @@ planned unless marked as implemented.
 - Test BIOS and UEFI boot paths in QEMU before treating a USB image as a release
 
 The next milestones are blocking IPC, an ELF loader for external programs,
-SMP-safe synchronization, and NX/guard-page support before adding SMP.
+and SMP-safe synchronization before adding SMP.
 The current ELF demo is embedded in the kernel image; IPC queues and snapshots
 have fixed capacities, and persistent storage currently requires VirtIO.

@@ -1,4 +1,5 @@
 #include <mm/address_space.hpp>
+#include <arch/x86_64/cpu/nx.hpp>
 #include <arch/x86_64/io.hpp>
 #include <lib/string.hpp>
 #include <mm/pmm.hpp>
@@ -9,6 +10,7 @@ static constexpr u64 PAGE_PRESENT = 1;
 static constexpr u64 PAGE_WRITABLE = 2;
 static constexpr u64 PAGE_USER = 4;
 static constexpr u64 PAGE_LARGE = 0x80;
+static constexpr u64 PAGE_NX = 1ULL << 63;
 static constexpr u64 PAGE_ADDRESS_MASK = 0x000FFFFFFFFFF000ULL;
 static constexpr usize PAGE_SIZE = 4096;
 static u64* table(paddr_t physical) {
@@ -101,7 +103,7 @@ void destroy(AddressSpace& space) {
 }
 
 bool map_page(AddressSpace& space, vaddr_t virtual_address,
-              paddr_t physical_address, bool writable) {
+              paddr_t physical_address, bool writable, bool executable) {
     if (!space.root || virtual_address < space.user_base || virtual_address >= space.user_limit
         || (virtual_address & (PAGE_SIZE - 1)) || (physical_address & (PAGE_SIZE - 1))) return false;
 
@@ -117,14 +119,17 @@ bool map_page(AddressSpace& space, vaddr_t virtual_address,
     u64* pt = table(e2 & PAGE_ADDRESS_MASK);
     const usize index = (virtual_address >> 12) & 0x1FF;
     if (pt[index] & PAGE_PRESENT) return false;
-    pt[index] = physical_address | PAGE_PRESENT | PAGE_USER | (writable ? PAGE_WRITABLE : 0);
+    const u64 nx = (!executable && arch::nx_enabled()) ? PAGE_NX : 0;
+    pt[index] = physical_address | PAGE_PRESENT | PAGE_USER
+        | (writable ? PAGE_WRITABLE : 0) | nx;
     return true;
 }
 
-bool allocate_page(AddressSpace& space, vaddr_t virtual_address, bool writable) {
+bool allocate_page(AddressSpace& space, vaddr_t virtual_address,
+                   bool writable, bool executable) {
     const paddr_t physical = pmm::alloc_page();
     if (!physical) return false;
-    if (map_page(space, virtual_address, physical, writable)) return true;
+    if (map_page(space, virtual_address, physical, writable, executable)) return true;
     pmm::free_page(physical);
     return false;
 }

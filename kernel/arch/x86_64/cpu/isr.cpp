@@ -20,27 +20,6 @@ static const char* EXCEPTION_NAMES[32] = {
     "Hypervisor Injection", "VMM Communication", "Security Exception", "Reserved",
 };
 
-static void dump(Registers* r) {
-    kprintf("\nException #%lu: %s\n", r->vector,
-            r->vector < 32 ? EXCEPTION_NAMES[r->vector] : "Unknown");
-    kprintf("  error_code = %#lx\n", r->error_code);
-    kprintf("  RIP = %p   CS  = %#lx  RFLAGS = %#lx\n", (void*)r->rip, r->cs, r->rflags);
-    kprintf("  RSP = %p   SS  = %#lx\n", (void*)r->rsp, r->ss);
-    kprintf("  RAX = %p   RBX = %p\n", (void*)r->rax, (void*)r->rbx);
-    kprintf("  RCX = %p   RDX = %p\n", (void*)r->rcx, (void*)r->rdx);
-    kprintf("  RSI = %p   RDI = %p\n", (void*)r->rsi, (void*)r->rdi);
-    kprintf("  RBP = %p   CR2 = %p\n", (void*)r->rbp, (void*)read_cr2());
-
-    if (r->vector == 14) {
-        u64 ec = r->error_code;
-        kprintf("  Page fault: %s, %s, %s%s\n",
-                (ec & 1) ? "protection violation" : "page not present",
-                (ec & 2) ? "write" : "read",
-                (ec & 4) ? "ring 3" : "ring 0",
-                (ec & 16) ? ", instruction fetch" : "");
-    }
-}
-
 extern "C" Registers* isr_dispatch(Registers* r) {
     if (auto fn = idt::handler_for(static_cast<u8>(r->vector))) {
         fn(r);
@@ -62,8 +41,9 @@ extern "C" Registers* isr_dispatch(Registers* r) {
             scheduler::mark_current_exited();
             return scheduler::schedule(r);
         }
-        dump(r);
-        panic("unhandled CPU exception");
+        panic_set_frame(r);
+        panic("unhandled CPU exception #%lu: %s", r->vector,
+              r->vector < 32 ? EXCEPTION_NAMES[r->vector] : "Unknown");
     }
     kprintf("[isr] unexpected interrupt %lu\n", r->vector);
     return r;

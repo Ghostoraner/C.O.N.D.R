@@ -1,4 +1,5 @@
 CXX     := $(shell command -v x86_64-elf-g++ 2>/dev/null || command -v g++)
+PYTHON  ?= python3
 LD      := $(shell command -v x86_64-elf-ld 2>/dev/null || command -v ld)
 AS      := nasm
 ISO_TOOL := $(shell command -v xorriso 2>/dev/null || command -v genisoimage 2>/dev/null)
@@ -20,13 +21,14 @@ endif
 
 BUILD   := build
 KERNEL  := $(BUILD)/condr.elf
+PRE_KERNEL := $(BUILD)/condr.pre.elf
 ISO     := $(BUILD)/condr.iso
 USB_ISO := $(BUILD)/condr-usb.iso
 LIMINE_DIR := limine
 LIMINE_BIN := $(LIMINE_DIR)/limine
 
 CXXFLAGS := \
-	-std=c++23 -O2 -g \
+	-std=c++23 -O2 -g -fno-omit-frame-pointer \
 	-ffreestanding -fno-exceptions -fno-rtti -fno-stack-protector \
 	-fno-stack-check -fno-PIC -fno-pie -fno-lto \
 	-mno-red-zone -mcmodel=kernel \
@@ -51,7 +53,9 @@ USER_ELF := $(BUILD)/user/demo.elf
 USER_OBJ := $(BUILD)/user/demo.elf.o
 KBD_ELF := $(BUILD)/user/kbd_demo.elf
 KBD_OBJ := $(BUILD)/user/kbd_demo.elf.o
-OBJ     := $(CXX_SRC:%.cpp=$(BUILD)/%.o) $(ASM_SRC:%.asm=$(BUILD)/%.o) $(BUILD)/$(FONT_SRC).o $(USER_OBJ) $(KBD_OBJ)
+BASE_OBJ := $(CXX_SRC:%.cpp=$(BUILD)/%.o) $(ASM_SRC:%.asm=$(BUILD)/%.o) $(BUILD)/$(FONT_SRC).o $(USER_OBJ) $(KBD_OBJ)
+SYMBOL_SRC := $(BUILD)/generated/kernel_symbols.cpp
+SYMBOL_OBJ := $(BUILD)/generated/kernel_symbols.o
 DEPS    := $(CXX_SRC:%.cpp=$(BUILD)/%.d)
 
 .PHONY: all kernel iso usb-iso run debug test clean distclean limine
@@ -60,9 +64,22 @@ all: kernel
 
 kernel: $(KERNEL)
 
-$(KERNEL): $(OBJ) kernel/linker.ld
+$(PRE_KERNEL): $(BASE_OBJ) kernel/linker.ld
 	@mkdir -p $(dir $@)
-	$(LD) $(LDFLAGS) -o $@ $(OBJ)
+	$(LD) $(LDFLAGS) -o $@ $(BASE_OBJ)
+
+$(SYMBOL_SRC): $(PRE_KERNEL) scripts/gen-symbols.py
+	@mkdir -p $(dir $@)
+	$(PYTHON) scripts/gen-symbols.py $< $@
+
+$(SYMBOL_OBJ): $(SYMBOL_SRC)
+	@mkdir -p $(dir $@)
+	@$(CXX) $(CXXFLAGS) -c $< -o $@
+	@echo "  CXX   $<"
+
+$(KERNEL): $(BASE_OBJ) $(SYMBOL_OBJ) kernel/linker.ld
+	@mkdir -p $(dir $@)
+	$(LD) $(LDFLAGS) -o $@ $(BASE_OBJ) $(SYMBOL_OBJ)
 	@echo "  LD    $@"
 
 $(BUILD)/%.o: %.cpp

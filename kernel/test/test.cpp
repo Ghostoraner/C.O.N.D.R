@@ -7,6 +7,7 @@
 #include <mm/address_space.hpp>
 #include <mm/heap.hpp>
 #include <mm/pmm.hpp>
+#include <mm/task_stack.hpp>
 
 namespace nord::test {
 
@@ -98,6 +99,26 @@ static bool memory_address_space_create(usize) {
 
 static bool scheduler_switch_count(usize) {
     return nord::arch::scheduler::count() != 0;
+}
+
+static bool memory_task_stack_guard(usize) {
+    void* first = mm::task_stack::allocate();
+    if (!first) return false;
+    void* second = mm::task_stack::allocate();
+    if (!second) {
+        mm::task_stack::release(first);
+        return false;
+    }
+
+    volatile u64* slot = static_cast<volatile u64*>(first);
+    *slot = 0x5A5A5A5A5A5A5A5AULL;
+    const bool mapped = *slot == 0x5A5A5A5A5A5A5A5AULL;
+    const bool distinct = first != second
+        && mm::task_stack::top(first) > reinterpret_cast<u64>(first);
+
+    mm::task_stack::release(second);
+    mm::task_stack::release(first);
+    return mapped && distinct;
 }
 
 namespace {
@@ -346,6 +367,7 @@ static bool register_once = []() -> bool {
     TestSuite::register_test("memory_pmm_allocate_page", 3, &memory_pmm_allocate_page);
     TestSuite::register_test("memory_address_space_create", 3, &memory_address_space_create);
     TestSuite::register_test("scheduler_switch_count", 5, &scheduler_switch_count);
+    TestSuite::register_test("memory_task_stack_guard", 3, &memory_task_stack_guard);
     TestSuite::register_test("fpu_xmm_context_switch", 1, &fpu_xmm_context_switch);
     TestSuite::register_test("keyboard_queue_order", 5, &keyboard_queue_order);
     TestSuite::register_test("keyboard_full_queue_drops", 3, &keyboard_full_queue_drops);

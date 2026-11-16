@@ -47,6 +47,10 @@ SECTIONS
         *(.data .data.*)
     } :data
 
+    .kernel_symbols : ALIGN(8) {
+        KEEP(*(.kernel_symbols))
+    } :data
+
     .bss : {
         __bss_start = .;
         *(.bss .bss.*)

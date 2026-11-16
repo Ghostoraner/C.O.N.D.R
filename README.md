@@ -30,6 +30,10 @@ and UEFI systems.
 
 - Ring 3 user tasks with per-process address spaces and an ELF64 loader
 
+- NX page protections for user data/stack pages, plus guard pages below kernel and user task stacks
+
+- Stable exception reports with register dumps, frame-pointer call stacks, and ELF symbol lookup
+
 - Physical page allocator, kernel heap, and virtual memory management
 
 - 32-bit Limine framebuffer with a 12x22 console font
@@ -54,7 +58,7 @@ and UEFI systems.
 ## Build and run
 
 Required tools: `g++` with C++23 support, `ld`, `nasm`, `make`, `git`,
-`qemu-system-x86_64`, and either `xorriso` or `genisoimage`. A dedicated
+`python3`, `qemu-system-x86_64`, and either `xorriso` or `genisoimage`. A dedicated
 `x86_64-elf` cross-compiler is recommended; the Makefile falls back to the
 host compiler and linker.
 
@@ -196,6 +200,8 @@ x86, написанная на freestanding C++23 и NASM. Загружаетс�
 * Переназначенный PIC 8259, тики PIT 100 Гц и очередь ввода PS/2 через IRQ
 * Однопроцессорный планировщик задач ядра с вытеснением по таймеру и отдельными стеками (`nord::arch::scheduler`)
 * Пользовательские задачи Ring 3 с собственными адресными пространствами и загрузчиком ELF64
+* NX-защита страниц данных и стека, guard-страницы под стеками задач ядра и пользователя
+* Стабильные отчёты об исключениях: дамп регистров, стек вызовов по frame pointer и имена функций из таблицы символов ELF
 * Физический аллокатор страниц, куча ядра и управление виртуальной памятью
 * Framebuffer Limine 32 bpp со шрифтом консоли 12x22
 * Ввод с PS/2-клавиатуры и графическая командная консоль

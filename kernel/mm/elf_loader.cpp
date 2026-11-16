@@ -6,12 +6,14 @@
 namespace nord::mm::elf_loader {
 
 static constexpr u32 PT_LOAD = 1;
+static constexpr u32 PF_X = 1;
 static constexpr u32 PF_W = 2;
 static constexpr u16 EM_X86_64 = 62;
 static constexpr u8 ELFCLASS64 = 2;
 static constexpr u8 ELFDATA2LSB = 1;
 static constexpr u64 PAGE_SIZE = 4096;
-static constexpr u64 USER_STACK_SIZE = PAGE_SIZE;
+static constexpr u64 USER_STACK_SIZE = 4 * PAGE_SIZE;
+static constexpr u64 USER_STACK_GUARD_SIZE = PAGE_SIZE;
 static constexpr u64 ELF_LINK_BASE = 0x0000008000000000ULL;
 static constexpr u64 USER_STACK_OFFSET = 0x01000000;
 
@@ -86,8 +88,10 @@ bool load_image(const u8* image, const u8* image_end,
         const u64 segment_end = segment_address + program->memory_size;
         const u64 page_start = align_down(segment_address, PAGE_SIZE);
         const u64 page_end = align_up(segment_end, PAGE_SIZE);
+        const bool writable = (program->flags & PF_W) != 0;
+        const bool executable = (program->flags & PF_X) != 0;
         for (u64 page = page_start; page < page_end; page += PAGE_SIZE) {
-            if (!address_space::allocate_page(space, page, (program->flags & PF_W) != 0))
+            if (!address_space::allocate_page(space, page, writable, executable))
                 return false;
         }
         if (program->file_size && !address_space::copy_to_user(
@@ -99,7 +103,13 @@ bool load_image(const u8* image, const u8* image_end,
     if (!loaded_segment || !address_space::contains(space, entry, 1)) return false;
     const u64 stack_top = space.user_base + USER_STACK_OFFSET;
     const u64 stack_base = stack_top - USER_STACK_SIZE;
-    if (!address_space::allocate_page(space, stack_base, true)) return false;
+    // The page just below the stack stays unmapped and acts as a guard: an
+    // underflow traps instead of silently corrupting neighbouring mappings.
+    const u64 guard_page = stack_base - USER_STACK_GUARD_SIZE;
+    if (guard_page < space.user_base) return false;
+    for (u64 page = stack_base; page < stack_top; page += PAGE_SIZE) {
+        if (!address_space::allocate_page(space, page, true, false)) return false;
+    }
     stack_pointer = stack_top;
     return true;
 }
