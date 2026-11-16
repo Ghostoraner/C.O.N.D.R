@@ -64,10 +64,12 @@ static paddr_t unmap_page(vaddr_t address) {
     const u64 entry = pt[index];
     if (!(entry & PAGE_PRESENT)) return 0;
     pt[index] = 0;
+    asm volatile("invlpg (%0)" :: "r"(address) : "memory");
     return entry & PAGE_ADDRESS_MASK;
 }
 
 bool init(usize stack_size) {
+    if (g_base) return true;
     g_root = arch::read_cr3() & PAGE_ADDRESS_MASK;
     if (!g_root || !stack_size) return false;
     g_stack_size = align_up(stack_size, PAGE_SIZE);
@@ -78,6 +80,15 @@ bool init(usize stack_size) {
         if (pml4[index] & PAGE_PRESENT) continue;
         u64 base = static_cast<u64>(index) << 39;
         if (index & 0x100) base |= 0xFFFF000000000000ULL;
+
+        // Reserve the PML4 slot now, not on the first allocation. Address
+        // spaces created later copy this entry, so the stack region must
+        // already be visible in the shared kernel half.
+        const paddr_t pdpt = pmm::alloc_page();
+        if (!pdpt) return false;
+        pml4[index] = pdpt | PAGE_PRESENT | PAGE_WRITABLE;
+        asm volatile("invlpg (%0)" :: "r"(base) : "memory");
+
         g_base = base;
         for (usize i = 0; i < MAX_STACKS; ++i) g_slots[i] = false;
         return true;

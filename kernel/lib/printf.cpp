@@ -3,7 +3,11 @@
 #include <lib/symbols.hpp>
 #include <arch/x86_64/cpu/idt.hpp>
 #include <arch/x86_64/io.hpp>
+#include <mm/pmm.hpp>
 #include <stdarg.h>
+
+extern "C" const nord::u8 __kernel_start[];
+extern "C" const nord::u8 __kernel_end[];
 
 namespace nord {
 
@@ -151,13 +155,43 @@ static void dump_page_fault(const arch::Registers* frame) {
     emit('\n');
 }
 
+static constexpr u64 PAGE_PRESENT_BIT = 1;
+static constexpr u64 PAGE_LARGE_BIT = 0x80;
+static constexpr u64 PAGE_ADDRESS_MASK = 0x000FFFFFFFFFF000ULL;
+
+static bool mapped_in_current_space(u64 address) {
+    const u64 hhdm = mm::pmm::hhdm();
+    const u64 root = arch::read_cr3() & PAGE_ADDRESS_MASK;
+    if (!hhdm || !root) return false;
+
+    auto table = [hhdm](u64 physical) {
+        return reinterpret_cast<const u64*>(physical + hhdm);
+    };
+
+    const u64 e4 = table(root)[(address >> 39) & 0x1FF];
+    if (!(e4 & PAGE_PRESENT_BIT) || (e4 & PAGE_LARGE_BIT)) return false;
+    const u64 e3 = table(e4 & PAGE_ADDRESS_MASK)[(address >> 30) & 0x1FF];
+    if (!(e3 & PAGE_PRESENT_BIT)) return false;
+    if (e3 & PAGE_LARGE_BIT) return true;
+    const u64 e2 = table(e3 & PAGE_ADDRESS_MASK)[(address >> 21) & 0x1FF];
+    if (!(e2 & PAGE_PRESENT_BIT)) return false;
+    if (e2 & PAGE_LARGE_BIT) return true;
+    const u64 e1 = table(e2 & PAGE_ADDRESS_MASK)[(address >> 12) & 0x1FF];
+    return (e1 & PAGE_PRESENT_BIT) != 0;
+}
+
+static bool in_kernel_image(u64 address) {
+    return address >= reinterpret_cast<u64>(__kernel_start)
+        && address < reinterpret_cast<u64>(__kernel_end);
+}
+
 static bool valid_frame(u64 rbp, u64 rsp, u64 previous) {
     if (!rbp || (rbp & 0x7)) return false;
     if ((rbp >> 48) != 0xFFFF) return false;
     if (rsp && rbp < rsp) return false;
     if (rsp && rbp - rsp > 1024 * 1024) return false;
     if (previous && rbp <= previous) return false;
-    return true;
+    return mapped_in_current_space(rbp) && mapped_in_current_space(rbp + 8);
 }
 
 static void emit_stack_frame(usize index, u64 address) {
@@ -184,7 +218,7 @@ static void dump_stack_trace(const arch::Registers* frame, u64 rsp, u64 rbp) {
         const auto* words = reinterpret_cast<const u64*>(rbp);
         const u64 next_rbp = words[0];
         const u64 return_address = words[1];
-        if (!return_address) break;
+        if (!in_kernel_image(return_address)) break;
         emit_stack_frame(index++, return_address);
         previous = rbp;
         rbp = next_rbp;
