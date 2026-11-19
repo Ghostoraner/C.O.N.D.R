@@ -3,8 +3,7 @@
 </p>
 
 
-[![Build](https://://github.comGhostoraner/C.O.N.D.R/.github/workflows/build.yml/badge.svg)](https://://github.comGhostoraner/C.O.N.D.R/actions/workflows/build.yml)
-[![Project](https://badgen.net/badge/Project/experimental/orange)](https://://github.comGhostoraner/C.O.N.D.R)
+[![Build kernel](https://github.com/Ghostoraner/C.O.N.D.R/actions/workflows/build.yml/badge.svg)](https://github.com/Ghostoraner/C.O.N.D.R/actions/workflows/build.yml)[![Project](https://badgen.net/badge/Project/experimental/orange)](https://://github.comGhostoraner/C.O.N.D.R)
 ![C++23](https://badgen.net/badge/C++/23/blue)
 ![NASM](https://badgen.net/badge/Assembly/NASM/grey)
 ![Freestanding](https://badgen.net/badge/Environment/Freestanding/black)
