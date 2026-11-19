@@ -2,13 +2,17 @@
   <img src="docs/assets/condr-logo.jpg" alt="C.O.N.D.R. — Command Operating Node Data Router" width="900">
 </p>
 
-<p align="center">
-  <a href="https://github.com/Ghostoraner/C.O.N.D.R"><img src="https://img.shields.io/badge/Project-experimental-orange?style=for-the-badge" alt="Experimental project"></a>
-  <img src="https://img.shields.io/badge/C%2B%2B-23-00599C?style=for-the-badge&logo=cplusplus&logoColor=white" alt="C++23">
-  <img src="https://img.shields.io/badge/Architecture-x86__64-555555?style=for-the-badge" alt="x86_64">
-  <img src="https://img.shields.io/badge/Boot-Limine-7c3aed?style=for-the-badge" alt="Limine">
-  <a href="LICENSE"><img src="https://img.shields.io/badge/License-MIT-green?style=for-the-badge" alt="MIT License"></a>
-</p>
+
+[![Build](https://://github.comGhostoraner/C.O.N.D.R/actions/workflows/build.yml/badge.svg)](https://://github.comGhostoraner/C.O.N.D.R/actions/workflows/build.yml)
+[![Project](https://badgen.net/badge/Project/experimental/orange)](https://://github.comGhostoraner/C.O.N.D.R)
+![C++23](https://badgen.net/badge/C++/23/blue)
+![NASM](https://badgen.net/badge/Assembly/NASM/grey)
+![Freestanding](https://badgen.net/badge/Environment/Freestanding/black)
+![Arch](https://badgen.net/badge/Architecture/x86_64/grey)
+![Boot](https://badgen.net/badge/Boot/Limine/purple)
+![QEMU](https://badgen.net/badge/Emulator/QEMU/orange)
+[![Last Commit](https://badgen.net/github/last-commit/Ghostoraner/C.O.N.D.R)](https://://github.comGhostoraner/C.O.N.D.R/commits/main)
+[![License](https://badgen.net/badge/License/MIT/green)](LICENSE)
 
 
 # C.O.N.D.R.
