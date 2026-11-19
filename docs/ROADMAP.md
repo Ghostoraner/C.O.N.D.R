@@ -18,6 +18,8 @@ planned unless marked as implemented.
 - Preemption-safe spinlocks around PMM, NVMFS, and IPC state
 - PCI enumeration, legacy VirtIO block sector I/O, and two-slot CRC NVMFS snapshots
 - QEMU integration test for short IDs, IPC, and persistence across reboot
+- Dynamically sized task table, task-stack slots, and NVMFS node/tag registries
+- Boundary tests for PMM/heap exhaustion, IPC queue saturation, and corrupted snapshots
 - Framebuffer console, serial logging, and NVMFS object registry
 
 ## Kernel execution model
@@ -44,8 +46,9 @@ planned unless marked as implemented.
 
 - Keep `make` warning-clean for C++ and run the kernel in QEMU after each
   interrupt, memory, or scheduler change
-- Expand automated tests for allocator boundaries, user-fault isolation,
-  capability revocation, snapshot corruption recovery, and queue saturation
+- Automated tests now cover allocator boundaries, IPC queue saturation, and
+  snapshot corruption rejection; remaining work is user-fault isolation,
+  capability revocation, and recovery from a corrupted newest disk slot
 - Test BIOS and UEFI boot paths in QEMU before treating a USB image as a release
 
 The next milestones are blocking IPC, an ELF loader for external programs,

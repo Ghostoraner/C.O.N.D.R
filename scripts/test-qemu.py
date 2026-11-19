@@ -164,7 +164,7 @@ def main():
             if "user-mode IPC: pong" not in restored:
                 raise RuntimeError(f"Ring 3 IPC smoke test failed\n{restored}")
             send_line(monitor, "check")
-            checks = wait_for_log(process, log, "IPC check: 13 passed")
+            checks = wait_for_log(process, log, "IPC check: 17 passed")
             if "NVMFS check: 6 passed" not in checks:
                 raise RuntimeError(f"NVMFS self-test failed\n{checks}")
             send_line(monitor, "test")
@@ -173,16 +173,20 @@ def main():
             # Deliberate kernel-stack exhaustion must be reported through the
             # double-fault IST handler and halt the machine, not reset it.
             send_line(monitor, "ist-test")
-            fault = wait_for_log(process, log, "*** C.O.N.D.R. PANIC ***")
+            wait_for_log(process, log, "*** C.O.N.D.R. PANIC ***")
             time.sleep(0.5)
+            fault = read_log(log)
             if "Double Fault" not in fault:
                 raise RuntimeError(f"stack overflow did not report a double fault\n{fault}")
+            if ("Registers:" not in fault or "Call stack:" not in fault
+                    or "stack_overflow_trap" not in fault):
+                raise RuntimeError(f"panic report lacks registers, stack or symbols\n{fault}")
             if process.poll() is not None:
                 raise RuntimeError("QEMU exited after the double fault (possible reset)")
             if fault.count("kernel booting") != 1:
                 raise RuntimeError("machine rebooted after the double fault")
             print(f"QEMU integration passed: short ID {object_id}, IPC, disk restore, "
-                  "and double-fault IST")
+                  "double-fault IST, and symbol-resolved panic")
         finally:
             stop_qemu(process, monitor)
 

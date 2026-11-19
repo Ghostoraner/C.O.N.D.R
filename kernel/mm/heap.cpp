@@ -27,7 +27,11 @@ static u64    g_capacity = 0;
 static u64    g_used = 0;
 
 static Block* grow(u64 need) {
-    u64 pages = align_up(need + HEADER, PAGE_SIZE) / PAGE_SIZE;
+    if (need > ~static_cast<u64>(0) - HEADER) return nullptr;
+    const u64 total = need + HEADER;
+    if (total > ~static_cast<u64>(0) - (PAGE_SIZE - 1)) return nullptr;
+    const u64 pages_needed = align_up(total, PAGE_SIZE) / PAGE_SIZE;
+    u64 pages = pages_needed;
     if (pages < GROW_PAGES) pages = GROW_PAGES;
 
     paddr_t phys = pmm::alloc_pages(pages);
@@ -70,7 +74,7 @@ static void split(Block* b, u64 size) {
 
 void* kmalloc(usize size) {
     PreemptionGuard guard;
-    if (size == 0) return nullptr;
+    if (size == 0 || size > ~static_cast<usize>(0) - 15) return nullptr;
     size = align_up(size, 16);
 
     for (Block* b = g_head; b; b = b->next) {

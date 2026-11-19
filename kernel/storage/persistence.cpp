@@ -47,19 +47,28 @@ static void mark_dirty() {
     g_dirty = true;
 }
 
-static bool read_slot(u64 lba, u8* buffer, DiskHeader& header) {
-    if (!g_blk || !g_blk->read_sector(lba, buffer)) return false;
+static bool validate_slot(const u8* buffer, DiskHeader& header) {
     memcpy(&header, buffer, sizeof(header));
     if (header.magic != SNAPSHOT_MAGIC || header.version != SNAPSHOT_VERSION
         || header.header_size != sizeof(DiskHeader)
         || header.payload_size > SLOT_BYTES - SECTOR_SIZE) return false;
+    return checksum(buffer + SECTOR_SIZE, header.payload_size) == header.checksum;
+}
 
-    const usize sectors = (header.payload_size + SECTOR_SIZE - 1) / SECTOR_SIZE;
+static bool read_slot(u64 lba, u8* buffer, DiskHeader& header) {
+    if (!g_blk || !g_blk->read_sector(lba, buffer)) return false;
+    DiskHeader candidate{};
+    memcpy(&candidate, buffer, sizeof(candidate));
+    if (candidate.magic != SNAPSHOT_MAGIC || candidate.version != SNAPSHOT_VERSION
+        || candidate.header_size != sizeof(DiskHeader)
+        || candidate.payload_size > SLOT_BYTES - SECTOR_SIZE) return false;
+
+    const usize sectors = (candidate.payload_size + SECTOR_SIZE - 1) / SECTOR_SIZE;
     for (usize sector = 0; sector < sectors; ++sector) {
         if (!g_blk->read_sector(
                 lba + 1 + sector, buffer + SECTOR_SIZE + sector * SECTOR_SIZE)) return false;
     }
-    return checksum(buffer + SECTOR_SIZE, header.payload_size) == header.checksum;
+    return validate_slot(buffer, header);
 }
 
 static void load_snapshot() {
@@ -199,6 +208,62 @@ bool sync() {
 
     g_active_slot = target_slot;
     g_generation = header.generation;
+    return true;
+}
+
+bool selftest(u32& checks) {
+    checks = 0;
+    auto* image = static_cast<u8*>(mm::heap::kmalloc(SLOT_BYTES));
+    if (!image) return false;
+    memset(image, 0, SLOT_BYTES);
+
+    static constexpr char payload[] = "snapshot-corruption-probe";
+    const usize payload_size = sizeof(payload) - 1;
+    DiskHeader header{};
+    header.magic = SNAPSHOT_MAGIC;
+    header.version = SNAPSHOT_VERSION;
+    header.header_size = sizeof(DiskHeader);
+    header.generation = 1;
+    header.payload_size = payload_size;
+    header.checksum = checksum(reinterpret_cast<const u8*>(payload), payload_size);
+    memcpy(image, &header, sizeof(header));
+    memcpy(image + SECTOR_SIZE, payload, payload_size);
+
+    DiskHeader parsed{};
+    if (!validate_slot(image, parsed)) {
+        mm::heap::kfree(image);
+        return false;
+    }
+    ++checks;
+
+    auto expect_reject = [&](usize offset, u8 mask) {
+        image[offset] ^= mask;
+        DiskHeader ignored{};
+        const bool rejected = !validate_slot(image, ignored);
+        image[offset] ^= mask;
+        return rejected;
+    };
+
+    if (!expect_reject(0, 0xFF)) { mm::heap::kfree(image); return false; }
+    ++checks;
+    if (!expect_reject(4, 0xFF)) { mm::heap::kfree(image); return false; }
+    ++checks;
+    if (!expect_reject(6, 0xFF)) { mm::heap::kfree(image); return false; }
+    ++checks;
+    if (!expect_reject(SECTOR_SIZE, 0xFF)) { mm::heap::kfree(image); return false; }
+    ++checks;
+
+    DiskHeader oversized = header;
+    oversized.payload_size = SLOT_BYTES;
+    memcpy(image, &oversized, sizeof(oversized));
+    DiskHeader ignored{};
+    if (validate_slot(image, ignored)) {
+        mm::heap::kfree(image);
+        return false;
+    }
+    ++checks;
+
+    mm::heap::kfree(image);
     return true;
 }
 

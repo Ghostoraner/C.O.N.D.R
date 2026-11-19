@@ -14,18 +14,18 @@ static sync::RecursiveSpinLock g_lock;
 Lock::Lock() { g_lock.lock(); }
 Lock::~Lock() { g_lock.unlock(); }
 
-static constexpr usize NODE_CAPACITY = 128;
-static constexpr usize TAG_CAPACITY = 512;
 static constexpr usize NAME_CAPACITY = 48;
 static constexpr usize TAG_KEY_CAPACITY = 24;
 static constexpr usize TAG_VALUE_CAPACITY = 48;
 static constexpr usize MAX_STREAM_SIZE = 32768;
 static constexpr u64 MAX_STREAM_BYTES = 262144;
 static constexpr u32 SNAPSHOT_MAGIC = 0x53464D4E;
-static constexpr u16 SNAPSHOT_VERSION = 2;
+static constexpr u16 SNAPSHOT_VERSION = 3;
 
-static Node g_nodes[NODE_CAPACITY];
-static TagIndex g_tag_index[TAG_CAPACITY];
+static Node** g_nodes;
+static usize g_node_capacity;
+static TagIndex* g_tag_index;
+static usize g_tag_capacity;
 static usize g_node_count;
 static usize g_tag_count;
 static u64 g_stream_bytes;
@@ -36,9 +36,9 @@ static ChangeHook g_change_hook;
 struct [[gnu::packed]] SnapshotHeader {
     u32 magic;
     u16 version;
-    u16 node_count;
-    u16 tag_count;
     u16 reserved;
+    u32 node_count;
+    u32 tag_count;
     u32 stream_bytes;
     u64 next_id;
 };
@@ -60,8 +60,59 @@ struct [[gnu::packed]] SnapshotTag {
     char value[TAG_VALUE_CAPACITY];
 };
 
-static Node g_restore_nodes[NODE_CAPACITY];
-static TagIndex g_restore_tags[TAG_CAPACITY];
+static bool grow_nodes(usize needed) {
+    if (needed <= g_node_capacity) return true;
+    usize capacity = g_node_capacity ? g_node_capacity : 16;
+    while (capacity < needed) {
+        if (capacity > ~static_cast<usize>(0) / 2) return false;
+        capacity *= 2;
+    }
+    auto** nodes = static_cast<Node**>(
+        mm::heap::krealloc(g_nodes, capacity * sizeof(Node*)));
+    if (!nodes) return false;
+    for (usize i = g_node_capacity; i < capacity; ++i) nodes[i] = nullptr;
+    g_nodes = nodes;
+    g_node_capacity = capacity;
+    return true;
+}
+
+static bool grow_tags(usize needed) {
+    if (needed <= g_tag_capacity) return true;
+    usize capacity = g_tag_capacity ? g_tag_capacity : 32;
+    while (capacity < needed) {
+        if (capacity > ~static_cast<usize>(0) / 2) return false;
+        capacity *= 2;
+    }
+    auto* tags = static_cast<TagIndex*>(
+        mm::heap::krealloc(g_tag_index, capacity * sizeof(TagIndex)));
+    if (!tags) return false;
+    for (usize i = g_tag_capacity; i < capacity; ++i) memset(&tags[i], 0, sizeof(TagIndex));
+    g_tag_index = tags;
+    g_tag_capacity = capacity;
+    return true;
+}
+
+static void free_nodes(Node** nodes, usize capacity) {
+    if (!nodes) return;
+    for (usize i = 0; i < capacity; ++i) {
+        if (!nodes[i]) continue;
+        if (nodes[i]->stream.bytes) mm::heap::kfree(nodes[i]->stream.bytes);
+        mm::heap::kfree(nodes[i]);
+    }
+    mm::heap::kfree(nodes);
+}
+
+static void free_node_table() {
+    free_nodes(g_nodes, g_node_capacity);
+    g_nodes = nullptr;
+    g_node_capacity = 0;
+}
+
+static void free_tag_table() {
+    mm::heap::kfree(g_tag_index);
+    g_tag_index = nullptr;
+    g_tag_capacity = 0;
+}
 
 static void notify_change() {
     if (g_change_hook) g_change_hook();
@@ -76,7 +127,7 @@ static bool same(const char* left, const char* right) {
 }
 
 static TagIndex* find_tag_entry(NodeId id, const char* key, const char* value) {
-    for (usize i = 0; i < TAG_CAPACITY; ++i) {
+    for (usize i = 0; i < g_tag_capacity; ++i) {
         TagIndex& entry = g_tag_index[i];
         if (entry.active && entry.node_id == id
             && same(entry.key, key) && same(entry.value, value)) return &entry;
@@ -86,8 +137,8 @@ static TagIndex* find_tag_entry(NodeId id, const char* key, const char* value) {
 
 void init() {
     Lock guard;
-    memset(g_nodes, 0, sizeof(g_nodes));
-    memset(g_tag_index, 0, sizeof(g_tag_index));
+    free_node_table();
+    free_tag_table();
     g_node_count = 0;
     g_tag_count = 0;
     g_stream_bytes = 0;
@@ -117,23 +168,32 @@ bool create(NodeType type, const char* node_name, NodeId container_id,
         }
     }
 
-    usize slot = NODE_CAPACITY;
-    for (usize i = 0; i < NODE_CAPACITY; ++i) {
-        if (!g_nodes[i].active) { slot = i; break; }
+    usize slot = g_node_capacity;
+    for (usize i = 0; i < g_node_capacity; ++i) {
+        if (!g_nodes[i]) { slot = i; break; }
     }
-    if (slot == NODE_CAPACITY) { error = Error::table_full; return false; }
+    if (slot == g_node_capacity) {
+        const usize previous = g_node_capacity;
+        if (!grow_nodes(g_node_capacity ? g_node_capacity + 1 : 1)) {
+            error = Error::no_memory;
+            return false;
+        }
+        slot = previous;
+    }
 
-    Node& node = g_nodes[slot];
-    memset(&node, 0, sizeof(node));
-    node.id = g_next_id++;
-    node.container_id = container_id;
-    node.type = type;
-    node.active = true;
-    node.owner = 0;
-    node.rights = static_cast<u8>(Right::all);
-    memcpy(node.name, node_name, length(node_name) + 1);
+    auto* node = static_cast<Node*>(mm::heap::kmalloc(sizeof(Node)));
+    if (!node) { error = Error::no_memory; return false; }
+    memset(node, 0, sizeof(*node));
+    node->id = g_next_id++;
+    node->container_id = container_id;
+    node->type = type;
+    node->active = true;
+    node->owner = 0;
+    node->rights = static_cast<u8>(Right::all);
+    memcpy(node->name, node_name, length(node_name) + 1);
+    g_nodes[slot] = node;
     ++g_node_count;
-    result = node.id;
+    result = node->id;
     error = Error::none;
     notify_change();
     return true;
@@ -142,25 +202,28 @@ bool create(NodeType type, const char* node_name, NodeId container_id,
 Node* find(NodeId id) {
     Lock guard;
     if (!id) return nullptr;
-    for (usize i = 0; i < NODE_CAPACITY; ++i)
-        if (g_nodes[i].active && g_nodes[i].id == id) return &g_nodes[i];
+    for (usize i = 0; i < g_node_capacity; ++i) {
+        Node* node = g_nodes[i];
+        if (node && node->active && node->id == id) return node;
+    }
     return nullptr;
 }
 
 Node* at(usize active_position) {
     Lock guard;
-    for (usize i = 0; i < NODE_CAPACITY; ++i) {
-        if (!g_nodes[i].active) continue;
-        if (active_position-- == 0) return &g_nodes[i];
+    for (usize i = 0; i < g_node_capacity; ++i) {
+        Node* node = g_nodes[i];
+        if (!node || !node->active) continue;
+        if (active_position-- == 0) return node;
     }
     return nullptr;
 }
 
 Node* directory_at(const Directory& directory, usize& cursor) {
     Lock guard;
-    while (cursor < NODE_CAPACITY) {
-        Node* node = &g_nodes[cursor++];
-        if (node->active && node->container_id == directory.container_id) return node;
+    while (cursor < g_node_capacity) {
+        Node* node = g_nodes[cursor++];
+        if (node && node->active && node->container_id == directory.container_id) return node;
     }
     return nullptr;
 }
@@ -181,21 +244,29 @@ bool add_tag(NodeId id, const char* key, const char* value, Error& error) {
     }
     if (find_tag_entry(id, key, value)) { error = Error::none; return true; }
 
-    for (usize i = 0; i < TAG_CAPACITY; ++i) {
-        TagIndex& entry = g_tag_index[i];
-        if (entry.active) continue;
-        memset(&entry, 0, sizeof(entry));
-        entry.node_id = id;
-        entry.active = true;
-        memcpy(entry.key, key, length(key) + 1);
-        memcpy(entry.value, value, length(value) + 1);
-        ++g_tag_count;
-        error = Error::none;
-        notify_change();
-        return true;
+    usize slot = g_tag_capacity;
+    for (usize i = 0; i < g_tag_capacity; ++i) {
+        if (!g_tag_index[i].active) { slot = i; break; }
     }
-    error = Error::table_full;
-    return false;
+    if (slot == g_tag_capacity) {
+        const usize previous = g_tag_capacity;
+        if (!grow_tags(g_tag_capacity ? g_tag_capacity + 1 : 1)) {
+            error = Error::no_memory;
+            return false;
+        }
+        slot = previous;
+    }
+
+    TagIndex& entry = g_tag_index[slot];
+    memset(&entry, 0, sizeof(entry));
+    entry.node_id = id;
+    entry.active = true;
+    memcpy(entry.key, key, length(key) + 1);
+    memcpy(entry.value, value, length(value) + 1);
+    ++g_tag_count;
+    error = Error::none;
+    notify_change();
+    return true;
 }
 
 bool remove_tag(NodeId id, const char* key, const char* value, Error& error) {
@@ -212,7 +283,7 @@ bool remove_tag(NodeId id, const char* key, const char* value, Error& error) {
 bool find_tag(const char* key, const char* value, usize& cursor, NodeId& result) {
     Lock guard;
     if (!key || !value) return false;
-    while (cursor < TAG_CAPACITY) {
+    while (cursor < g_tag_capacity) {
         const TagIndex& entry = g_tag_index[cursor++];
         if (entry.active && same(entry.key, key) && same(entry.value, value)
             && find(entry.node_id)) {
@@ -225,7 +296,7 @@ bool find_tag(const char* key, const char* value, usize& cursor, NodeId& result)
 
 bool tag_at(usize& cursor, TagView& result) {
     Lock guard;
-    while (cursor < TAG_CAPACITY) {
+    while (cursor < g_tag_capacity) {
         const TagIndex& entry = g_tag_index[cursor++];
         if (!entry.active || !find(entry.node_id)) continue;
         result = {entry.node_id, entry.key, entry.value};
@@ -270,17 +341,25 @@ bool write(NodeId id, const void* bytes, usize size, bool append, Error& error) 
 
 bool erase(NodeId id, Error& error) {
     Lock guard;
-    Node* node = find(id);
-    if (!node) { error = Error::not_found; return false; }
+    usize index = g_node_capacity;
+    for (usize i = 0; i < g_node_capacity; ++i) {
+        if (g_nodes[i] && g_nodes[i]->active && g_nodes[i]->id == id) {
+            index = i;
+            break;
+        }
+    }
+    if (index == g_node_capacity) { error = Error::not_found; return false; }
+    Node* node = g_nodes[index];
+
     if (node->type == NodeType::vault || node->type == NodeType::directory) {
-        for (usize i = 0; i < NODE_CAPACITY; ++i) {
-            if (g_nodes[i].active && g_nodes[i].container_id == id) {
+        for (usize i = 0; i < g_node_capacity; ++i) {
+            if (g_nodes[i] && g_nodes[i]->active && g_nodes[i]->container_id == id) {
                 error = Error::container_not_empty;
                 return false;
             }
         }
     }
-    for (usize i = 0; i < TAG_CAPACITY; ++i) {
+    for (usize i = 0; i < g_tag_capacity; ++i) {
         if (g_tag_index[i].active && g_tag_index[i].node_id == id) {
             g_tag_index[i].active = false;
             --g_tag_count;
@@ -288,7 +367,8 @@ bool erase(NodeId id, Error& error) {
     }
     g_stream_bytes -= node->stream.size;
     if (node->stream.bytes) mm::heap::kfree(node->stream.bytes);
-    memset(node, 0, sizeof(*node));
+    g_nodes[index] = nullptr;
+    mm::heap::kfree(node);
     --g_node_count;
     error = Error::none;
     notify_change();
@@ -427,13 +507,15 @@ bool serialize(void* output, usize capacity, usize& size) {
     usize node_count = 0;
     usize tag_count = 0;
     usize stream_bytes = 0;
-    for (usize i = 0; i < NODE_CAPACITY; ++i) {
-        if (!g_nodes[i].active) continue;
+    for (usize i = 0; i < g_node_capacity; ++i) {
+        const Node* node = g_nodes[i];
+        if (!node || !node->active) continue;
         ++node_count;
-        stream_bytes += g_nodes[i].stream.size;
+        stream_bytes += node->stream.size;
     }
-    for (usize i = 0; i < TAG_CAPACITY; ++i)
+    for (usize i = 0; i < g_tag_capacity; ++i)
         if (g_tag_index[i].active) ++tag_count;
+    if (node_count > 0xFFFFFFFFULL || tag_count > 0xFFFFFFFFULL) return false;
 
     const usize records_size = sizeof(SnapshotHeader)
         + node_count * sizeof(SnapshotNode)
@@ -442,29 +524,29 @@ bool serialize(void* output, usize capacity, usize& size) {
         || stream_bytes > capacity - records_size) return false;
 
     auto* bytes = static_cast<u8*>(output);
-    SnapshotHeader header{SNAPSHOT_MAGIC, SNAPSHOT_VERSION,
-                          static_cast<u16>(node_count), static_cast<u16>(tag_count),
-                          0, static_cast<u32>(stream_bytes), g_next_id};
+    SnapshotHeader header{SNAPSHOT_MAGIC, SNAPSHOT_VERSION, 0,
+                          static_cast<u32>(node_count), static_cast<u32>(tag_count),
+                          static_cast<u32>(stream_bytes), g_next_id};
     memcpy(bytes, &header, sizeof(header));
     usize offset = sizeof(header);
     usize stream_offset = 0;
-    for (usize i = 0; i < NODE_CAPACITY; ++i) {
-        const Node& node = g_nodes[i];
-        if (!node.active) continue;
+    for (usize i = 0; i < g_node_capacity; ++i) {
+        const Node* node = g_nodes[i];
+        if (!node || !node->active) continue;
         SnapshotNode record{};
-        record.id = node.id;
-        record.container_id = node.container_id;
-        record.type = static_cast<u8>(node.type);
-    record.owner = node.owner;
-    record.rights = node.rights;
-        memcpy(record.name, node.name, NAME_CAPACITY);
-        record.stream_size = static_cast<u32>(node.stream.size);
+        record.id = node->id;
+        record.container_id = node->container_id;
+        record.type = static_cast<u8>(node->type);
+        record.owner = node->owner;
+        record.rights = node->rights;
+        memcpy(record.name, node->name, NAME_CAPACITY);
+        record.stream_size = static_cast<u32>(node->stream.size);
         record.stream_offset = static_cast<u32>(stream_offset);
         memcpy(bytes + offset, &record, sizeof(record));
         offset += sizeof(record);
-        stream_offset += node.stream.size;
+        stream_offset += node->stream.size;
     }
-    for (usize i = 0; i < TAG_CAPACITY; ++i) {
+    for (usize i = 0; i < g_tag_capacity; ++i) {
         const TagIndex& tag = g_tag_index[i];
         if (!tag.active) continue;
         SnapshotTag record{};
@@ -476,11 +558,11 @@ bool serialize(void* output, usize capacity, usize& size) {
     }
     const usize stream_data_offset = offset;
     stream_offset = 0;
-    for (usize i = 0; i < NODE_CAPACITY; ++i) {
-        const Node& node = g_nodes[i];
-        if (!node.active || !node.stream.size) continue;
-        memcpy(bytes + stream_data_offset + stream_offset, node.stream.bytes, node.stream.size);
-        stream_offset += node.stream.size;
+    for (usize i = 0; i < g_node_capacity; ++i) {
+        const Node* node = g_nodes[i];
+        if (!node || !node->active || !node->stream.size) continue;
+        memcpy(bytes + stream_data_offset + stream_offset, node->stream.bytes, node->stream.size);
+        stream_offset += node->stream.size;
     }
     size = records_size + stream_bytes;
     return true;
@@ -491,34 +573,47 @@ static bool has_terminator(const char* text, usize capacity) {
     return false;
 }
 
-static void free_restore_nodes() {
-    for (usize i = 0; i < NODE_CAPACITY; ++i) {
-        if (g_restore_nodes[i].stream.bytes) mm::heap::kfree(g_restore_nodes[i].stream.bytes);
-        memset(&g_restore_nodes[i], 0, sizeof(Node));
-    }
-}
-
 bool deserialize(const void* input, usize size) {
     Lock guard;
     if (!input || size < sizeof(SnapshotHeader)) return false;
     SnapshotHeader header{};
     memcpy(&header, input, sizeof(header));
     if (header.magic != SNAPSHOT_MAGIC || header.version != SNAPSHOT_VERSION
-        || header.node_count > NODE_CAPACITY || header.tag_count > TAG_CAPACITY
         || header.stream_bytes > MAX_STREAM_BYTES) return false;
 
-    const usize nodes_size = static_cast<usize>(header.node_count) * sizeof(SnapshotNode);
-    const usize tags_size = static_cast<usize>(header.tag_count) * sizeof(SnapshotTag);
+    const usize node_count = header.node_count;
+    const usize tag_count = header.tag_count;
+    const usize nodes_size = node_count * sizeof(SnapshotNode);
+    const usize tags_size = tag_count * sizeof(SnapshotTag);
     const usize stream_offset = sizeof(SnapshotHeader) + nodes_size + tags_size;
-    if (stream_offset > size || header.stream_bytes > size - stream_offset) return false;
+    if (stream_offset < sizeof(SnapshotHeader)
+        || stream_offset > size || header.stream_bytes > size - stream_offset) return false;
 
-    free_restore_nodes();
-    memset(g_restore_tags, 0, sizeof(g_restore_tags));
+    Node** staged_nodes = nullptr;
+    TagIndex* staged_tags = nullptr;
+    if (node_count) {
+        staged_nodes = static_cast<Node**>(
+            mm::heap::kcalloc(node_count, sizeof(Node*)));
+        if (!staged_nodes) return false;
+    }
+    if (tag_count) {
+        staged_tags = static_cast<TagIndex*>(
+            mm::heap::kcalloc(tag_count, sizeof(TagIndex)));
+        if (!staged_tags) {
+            mm::heap::kfree(staged_nodes);
+            return false;
+        }
+    }
+    auto discard = [&]() {
+        free_nodes(staged_nodes, node_count);
+        mm::heap::kfree(staged_tags);
+    };
+
     const auto* bytes = static_cast<const u8*>(input);
     usize offset = sizeof(SnapshotHeader);
     u64 max_id = 0;
     u64 stream_total = 0;
-    for (usize i = 0; i < header.node_count; ++i) {
+    for (usize i = 0; i < node_count; ++i) {
         SnapshotNode record{};
         memcpy(&record, bytes + offset, sizeof(record));
         offset += sizeof(record);
@@ -527,60 +622,64 @@ bool deserialize(const void* input, usize size) {
             || record.stream_size > MAX_STREAM_SIZE
             || record.stream_offset > header.stream_bytes
             || record.stream_size > header.stream_bytes - record.stream_offset) {
-            free_restore_nodes();
+            discard();
             return false;
         }
         for (usize prior = 0; prior < i; ++prior) {
-            if (g_restore_nodes[prior].id == record.id) {
-                free_restore_nodes();
+            if (staged_nodes[prior]->id == record.id) {
+                discard();
                 return false;
             }
         }
 
-        Node& node = g_restore_nodes[i];
-        node.id = record.id;
-        node.container_id = record.container_id;
-        node.type = static_cast<NodeType>(record.type);
-        node.active = true;
-        node.owner = record.owner;
-        node.rights = record.rights;
-        memcpy(node.name, record.name, NAME_CAPACITY);
-        node.stream.size = record.stream_size;
-        node.stream.capacity = record.stream_size;
+        auto* node = static_cast<Node*>(mm::heap::kmalloc(sizeof(Node)));
+        if (!node) { discard(); return false; }
+        memset(node, 0, sizeof(*node));
+        node->id = record.id;
+        node->container_id = record.container_id;
+        node->type = static_cast<NodeType>(record.type);
+        node->active = true;
+        node->owner = record.owner;
+        node->rights = record.rights;
+        memcpy(node->name, record.name, NAME_CAPACITY);
+        node->stream.size = record.stream_size;
+        node->stream.capacity = record.stream_size;
         if (record.stream_size) {
-            node.stream.bytes = static_cast<u8*>(mm::heap::kmalloc(record.stream_size));
-            if (!node.stream.bytes) {
-                free_restore_nodes();
+            node->stream.bytes = static_cast<u8*>(mm::heap::kmalloc(record.stream_size));
+            if (!node->stream.bytes) {
+                mm::heap::kfree(node);
+                discard();
                 return false;
             }
-            memcpy(node.stream.bytes, bytes + stream_offset + record.stream_offset,
+            memcpy(node->stream.bytes, bytes + stream_offset + record.stream_offset,
                    record.stream_size);
         }
+        staged_nodes[i] = node;
         stream_total += record.stream_size;
         if (record.id > max_id) max_id = record.id;
     }
     if (stream_total != header.stream_bytes) {
-        free_restore_nodes();
+        discard();
         return false;
     }
 
-    for (usize i = 0; i < header.tag_count; ++i) {
+    for (usize i = 0; i < tag_count; ++i) {
         SnapshotTag record{};
         memcpy(&record, bytes + offset, sizeof(record));
         offset += sizeof(record);
         if (!record.node_id || !has_terminator(record.key, TAG_KEY_CAPACITY)
             || !record.key[0] || !has_terminator(record.value, TAG_VALUE_CAPACITY)) {
-            free_restore_nodes();
+            discard();
             return false;
         }
         bool node_found = false;
-        for (usize n = 0; n < header.node_count; ++n)
-            if (g_restore_nodes[n].id == record.node_id) node_found = true;
+        for (usize n = 0; n < node_count; ++n)
+            if (staged_nodes[n]->id == record.node_id) node_found = true;
         if (!node_found) {
-            free_restore_nodes();
+            discard();
             return false;
         }
-        TagIndex& tag = g_restore_tags[i];
+        TagIndex& tag = staged_tags[i];
         tag.node_id = record.node_id;
         tag.active = true;
         memcpy(tag.key, record.key, TAG_KEY_CAPACITY);
@@ -588,33 +687,34 @@ bool deserialize(const void* input, usize size) {
     }
 
     if (!header.next_id || header.next_id <= max_id) {
-        free_restore_nodes();
+        discard();
         return false;
     }
-    for (usize i = 0; i < header.node_count; ++i) {
-        const Node& node = g_restore_nodes[i];
-        if (!node.container_id) continue;
+    for (usize i = 0; i < node_count; ++i) {
+        const Node* node = staged_nodes[i];
+        if (!node->container_id) continue;
         bool valid_container = false;
-        for (usize parent = 0; parent < header.node_count; ++parent) {
-            const Node& candidate = g_restore_nodes[parent];
-            if (candidate.id == node.container_id
-                && (candidate.type == NodeType::vault || candidate.type == NodeType::directory))
+        for (usize parent = 0; parent < node_count; ++parent) {
+            const Node* candidate = staged_nodes[parent];
+            if (candidate->id == node->container_id
+                && (candidate->type == NodeType::vault
+                    || candidate->type == NodeType::directory))
                 valid_container = true;
         }
         if (!valid_container) {
-            free_restore_nodes();
+            discard();
             return false;
         }
     }
 
-    for (usize i = 0; i < NODE_CAPACITY; ++i)
-        if (g_nodes[i].stream.bytes) mm::heap::kfree(g_nodes[i].stream.bytes);
-    memset(g_nodes, 0, sizeof(g_nodes));
-    memcpy(g_nodes, g_restore_nodes, sizeof(g_nodes));
-    memset(g_restore_nodes, 0, sizeof(g_restore_nodes));
-    memcpy(g_tag_index, g_restore_tags, sizeof(g_tag_index));
-    g_node_count = header.node_count;
-    g_tag_count = header.tag_count;
+    free_node_table();
+    free_tag_table();
+    g_nodes = staged_nodes;
+    g_node_capacity = node_count;
+    g_tag_index = staged_tags;
+    g_tag_capacity = tag_count;
+    g_node_count = node_count;
+    g_tag_count = tag_count;
     g_stream_bytes = stream_total;
     g_next_id = header.next_id;
     g_initialized = true;

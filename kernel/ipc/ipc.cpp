@@ -452,6 +452,69 @@ static bool selftest_locked(u32& checks, Error& error) {
         && memcmp(message.bytes, RESPONSE_B, sizeof(RESPONSE_B) - 1) == 0;
     if (success) ++checks;
 
+    // Message queue saturation: the peer must report queue_full once the ring
+    // is full and accept traffic again after it is drained.
+    if (success) {
+        bool filled = true;
+        for (usize i = 0; i < QUEUE_DEPTH; ++i) {
+            if (!send_locked(CLIENT_A, client_a, REQUEST_A,
+                             sizeof(REQUEST_A) - 1, failure)) {
+                filled = false;
+                break;
+            }
+        }
+        if (!filled) success = false;
+        else ++checks;
+
+        if (success) {
+            if (send_locked(CLIENT_A, client_a, REQUEST_A,
+                            sizeof(REQUEST_A) - 1, failure)
+                || failure != Error::queue_full) success = false;
+            else ++checks;
+        }
+
+        if (success) {
+            usize drained = 0;
+            while (receive_locked(SERVICE_OWNER, server_a, message, failure)) {
+                if (message.sender != CLIENT_A
+                    || message.size != sizeof(REQUEST_A) - 1) {
+                    success = false;
+                    break;
+                }
+                ++drained;
+            }
+            if (!success || drained != QUEUE_DEPTH || failure != Error::would_block)
+                success = false;
+            else ++checks;
+        }
+    }
+
+    // Pending connection saturation: a listener cannot hold more than
+    // QUEUE_DEPTH unaccepted connections.
+    if (success) {
+        u32 pending_clients[QUEUE_DEPTH];
+        usize pending_count = 0;
+        bool filled = true;
+        for (usize i = 0; i < QUEUE_DEPTH; ++i) {
+            const u32 client_id = 0xFFFFFF20u + static_cast<u32>(i);
+            Handle ignored = 0;
+            if (!connect_locked(client_id, "ipc-check", ignored, failure)) {
+                filled = false;
+                break;
+            }
+            pending_clients[pending_count++] = client_id;
+        }
+        if (!filled) success = false;
+        else {
+            Handle overflow = 0;
+            if (connect_locked(0xFFFFFF30u, "ipc-check", overflow, failure)
+                || failure != Error::queue_full) success = false;
+        }
+        if (success) ++checks;
+        for (usize i = 0; i < pending_count; ++i)
+            close_task_locked(pending_clients[i]);
+    }
+
     close_task_locked(SERVICE_OWNER);
     close_task_locked(CLIENT_A);
     close_task_locked(CLIENT_B);

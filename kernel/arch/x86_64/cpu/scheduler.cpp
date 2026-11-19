@@ -6,11 +6,11 @@
 #include <ipc/ipc.hpp>
 #include <lib/string.hpp>
 #include <mm/address_space.hpp>
+#include <mm/heap.hpp>
 #include <mm/task_stack.hpp>
 
 namespace nord::arch::scheduler {
 
-static constexpr usize MAX_TASKS = 8;
 static constexpr usize STACK_SIZE = 16 * 1024;
 static constexpr usize NAME_SIZE = 24;
 
@@ -28,7 +28,8 @@ struct Task {
     char name[NAME_SIZE];
 };
 
-static Task g_tasks[MAX_TASKS];
+static Task** g_tasks;
+static usize g_task_capacity;
 static usize g_count;
 static u32 g_next_id;
 static Task* g_current;
@@ -44,12 +45,54 @@ static constexpr u64 INITIAL_FRAME_WORDS = 22;
 
 extern "C" void isr_yield();
 
+static bool grow_tasks(usize needed) {
+    if (needed <= g_task_capacity) return true;
+    usize capacity = g_task_capacity ? g_task_capacity : 8;
+    while (capacity < needed) {
+        if (capacity > ~static_cast<usize>(0) / 2) return false;
+        capacity *= 2;
+    }
+    auto** tasks = static_cast<Task**>(
+        mm::heap::krealloc(g_tasks, capacity * sizeof(Task*)));
+    if (!tasks) return false;
+    for (usize i = g_task_capacity; i < capacity; ++i) tasks[i] = nullptr;
+    g_tasks = tasks;
+    g_task_capacity = capacity;
+    return true;
+}
+
+static bool reserve_task_slot(usize& slot) {
+    for (usize i = 0; i < g_task_capacity; ++i) {
+        if (!g_tasks[i]) { slot = i; return true; }
+    }
+    const usize previous = g_task_capacity;
+    if (!grow_tasks(g_task_capacity ? g_task_capacity + 1 : 1)) return false;
+    slot = previous;
+    return true;
+}
+
+static void free_task_table() {
+    if (!g_tasks) return;
+    for (usize i = 0; i < g_task_capacity; ++i) mm::heap::kfree(g_tasks[i]);
+    mm::heap::kfree(g_tasks);
+    g_tasks = nullptr;
+    g_task_capacity = 0;
+}
+
 static Task* next_ready() {
-    const usize start = g_current
-        ? static_cast<usize>(g_current - g_tasks + 1) % MAX_TASKS : 0;
-    for (usize offset = 0; offset < MAX_TASKS; ++offset) {
-        Task& task = g_tasks[(start + offset) % MAX_TASKS];
-        if (task.active && task.state == State::ready) return &task;
+    if (!g_task_capacity) return nullptr;
+    usize start = 0;
+    if (g_current) {
+        for (usize i = 0; i < g_task_capacity; ++i) {
+            if (g_tasks[i] == g_current) {
+                start = (i + 1) % g_task_capacity;
+                break;
+            }
+        }
+    }
+    for (usize offset = 0; offset < g_task_capacity; ++offset) {
+        Task* task = g_tasks[(start + offset) % g_task_capacity];
+        if (task && task->active && task->state == State::ready) return task;
     }
     return nullptr;
 }
@@ -61,26 +104,31 @@ static Task* next_ready() {
 }
 
 static Task* allocate_task(const char* name, u32& id) {
-    if (!name || !*name || g_count == MAX_TASKS) return nullptr;
+    if (!name || !*name) return nullptr;
     usize slot = 0;
-    while (slot < MAX_TASKS && g_tasks[slot].active) ++slot;
-    if (slot == MAX_TASKS) return nullptr;
+    if (!reserve_task_slot(slot)) return nullptr;
+
     void* stack = mm::task_stack::allocate();
     if (!stack) return nullptr;
+    auto* task = static_cast<Task*>(mm::heap::kmalloc(sizeof(Task)));
+    if (!task) {
+        mm::task_stack::release(stack);
+        return nullptr;
+    }
 
-    Task& task = g_tasks[slot];
-    memset(&task, 0, sizeof(task));
-    task.id = g_next_id++;
-    task.active = true;
-    task.state = State::ready;
-    task.stack = stack;
-    fpu::reset(task.fpu_state);
+    memset(task, 0, sizeof(*task));
+    task->id = g_next_id++;
+    task->active = true;
+    task->state = State::ready;
+    task->stack = stack;
+    fpu::reset(task->fpu_state);
     const usize length = strlen(name) < NAME_SIZE - 1 ? strlen(name) : NAME_SIZE - 1;
-    memcpy(task.name, name, length);
-    task.name[length] = '\0';
+    memcpy(task->name, name, length);
+    task->name[length] = '\0';
+    g_tasks[slot] = task;
     ++g_count;
-    id = task.id;
-    return &task;
+    id = task->id;
+    return task;
 }
 
 static Registers* initial_frame(Task& task, u64 entry, u64 code_selector,
@@ -108,13 +156,19 @@ static void reap_retired_task() {
     keyboard::clear_waiter(task->id);
     if (task->user_mode) mm::address_space::destroy(task->space);
     if (task->stack) mm::task_stack::release(task->stack);
-    memset(task, 0, sizeof(*task));
+    for (usize i = 0; i < g_task_capacity; ++i) {
+        if (g_tasks[i] == task) {
+            g_tasks[i] = nullptr;
+            break;
+        }
+    }
+    mm::heap::kfree(task);
     --g_count;
     g_retired_task = nullptr;
 }
 
 void init() {
-    memset(g_tasks, 0, sizeof(g_tasks));
+    free_task_table();
     g_count = 0;
     g_next_id = 1;
     g_current = nullptr;
@@ -224,10 +278,10 @@ void block_current() {
 }
 
 void wake(u32 id) {
-    for (usize i = 0; i < MAX_TASKS; ++i) {
-        Task& task = g_tasks[i];
-        if (task.active && task.id == id && task.state == State::blocked) {
-            task.state = State::ready;
+    for (usize i = 0; i < g_task_capacity; ++i) {
+        Task* task = g_tasks[i];
+        if (task && task->active && task->id == id && task->state == State::blocked) {
+            task->state = State::ready;
             return;
         }
     }
@@ -261,11 +315,11 @@ u32 current_id() {
 }
 
 bool at(usize position, TaskInfo& info) {
-    for (usize i = 0; i < MAX_TASKS; ++i) {
-        const Task& task = g_tasks[i];
-        if (!task.active) continue;
+    for (usize i = 0; i < g_task_capacity; ++i) {
+        const Task* task = g_tasks[i];
+        if (!task || !task->active) continue;
         if (position-- != 0) continue;
-        info = {task.id, task.name, task.state, task.switches};
+        info = {task->id, task->name, task->state, task->switches};
         return true;
     }
     return false;

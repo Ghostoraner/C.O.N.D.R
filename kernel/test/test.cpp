@@ -2,12 +2,14 @@
 #include <arch/x86_64/dev/keyboard.hpp>
 #include <arch/x86_64/cpu/scheduler.hpp>
 #include <fs/nvmfs.hpp>
+#include <ipc/ipc.hpp>
 #include <lib/print.hpp>
 #include <lib/string.hpp>
 #include <mm/address_space.hpp>
 #include <mm/heap.hpp>
 #include <mm/pmm.hpp>
 #include <mm/task_stack.hpp>
+#include <storage/persistence.hpp>
 
 namespace nord::test {
 
@@ -80,6 +82,112 @@ static bool memory_pmm_allocate_page(usize) {
     return true;
 }
 
+static bool memory_pmm_boundaries(usize) {
+    if (mm::pmm::alloc_pages(0) != 0) return false;
+
+    const u64 before = mm::pmm::used_bytes();
+    const paddr_t pages = mm::pmm::alloc_pages(4);
+    if (!pages || (pages & (PAGE_SIZE - 1))) return false;
+    for (usize i = 0; i < 4; ++i) {
+        auto* page = mm::pmm::phys_to_virt<volatile u64>(pages + i * PAGE_SIZE);
+        const u64 pattern = 0xA5A5A5A500000000ULL | i;
+        *page = pattern;
+        if (*page != pattern) {
+            mm::pmm::free_pages(pages, 4);
+            return false;
+        }
+    }
+    mm::pmm::free_pages(pages, 4);
+    if (mm::pmm::used_bytes() != before) return false;
+
+    if (mm::pmm::alloc_pages(~static_cast<usize>(0))) return false;
+    return mm::pmm::used_bytes() == before;
+}
+
+static bool memory_heap_boundaries(usize) {
+    if (mm::heap::kmalloc(0)) return false;
+    if (mm::heap::kmalloc(~static_cast<usize>(0))) return false;
+    if (mm::heap::kmalloc(~static_cast<usize>(0) - 1)) return false;
+    if (mm::heap::kmalloc(~static_cast<usize>(0) - 15)) return false;
+    if (mm::heap::kcalloc(~static_cast<usize>(0) / 2 + 1, 2)) return false;
+
+    u64 used_before = 0;
+    u64 capacity = 0;
+    mm::heap::stats(used_before, capacity);
+
+    void* small = mm::heap::kmalloc(1);
+    void* block = mm::heap::kmalloc(1024);
+    void* grown = mm::heap::krealloc(nullptr, 32);
+    if (!small || !block || !grown) {
+        mm::heap::kfree(small);
+        mm::heap::kfree(block);
+        mm::heap::kfree(grown);
+        return false;
+    }
+    memset(small, 0xA5, 1);
+    memset(block, 0x5A, 1024);
+    if (mm::heap::krealloc(grown, 0)) {
+        mm::heap::kfree(small);
+        mm::heap::kfree(block);
+        return false;
+    }
+    mm::heap::kfree(small);
+    mm::heap::kfree(block);
+
+    u64 used_after = 0;
+    u64 capacity_after = 0;
+    mm::heap::stats(used_after, capacity_after);
+    return used_after == used_before && capacity_after >= capacity;
+}
+
+static bool ipc_queue_boundaries(usize) {
+    u32 checks = 0;
+    ipc::Error error;
+    return ipc::selftest(checks, error) && checks >= 17;
+}
+
+static bool nvmfs_snapshot_corruption(usize) {
+    static constexpr char probe_name[] = "snapshot-corruption-probe";
+    static constexpr char probe_data[] = "snapshot-corruption-data";
+    nvmfs::NodeId id = 0;
+    nvmfs::Error error;
+    if (!nvmfs::create(nvmfs::NodeType::file, probe_name, 0, id, error)) return false;
+    bool ok = nvmfs::write(id, probe_data, sizeof(probe_data) - 1, false, error);
+
+    constexpr usize CAPACITY = 64 * 1024;
+    auto* snapshot = static_cast<u8*>(mm::heap::kmalloc(CAPACITY));
+    auto* copy = static_cast<u8*>(mm::heap::kmalloc(CAPACITY));
+    usize size = 0;
+    if (!snapshot || !copy || !nvmfs::serialize(snapshot, CAPACITY, size)
+        || size < 32) ok = false;
+
+    if (ok) {
+        const usize offsets[] = {0, 4, 8, 12, 16};
+        for (usize i = 0; i < sizeof(offsets) / sizeof(offsets[0]); ++i) {
+            memcpy(copy, snapshot, size);
+            copy[offsets[i]] ^= 0xFF;
+            if (nvmfs::deserialize(copy, size)) { ok = false; break; }
+        }
+    }
+    if (ok && nvmfs::deserialize(snapshot, size - 1)) ok = false;
+
+    if (ok) {
+        nvmfs::Node* node = nvmfs::find(id);
+        ok = node && node->stream.size == sizeof(probe_data) - 1
+            && memcmp(node->stream.bytes, probe_data, sizeof(probe_data) - 1) == 0;
+    }
+
+    mm::heap::kfree(snapshot);
+    mm::heap::kfree(copy);
+    nvmfs::erase(id, error);
+    return ok;
+}
+
+static bool storage_snapshot_corruption(usize) {
+    u32 checks = 0;
+    return nord::storage::persistence::selftest(checks) && checks >= 5;
+}
+
 static bool memory_address_space_create(usize) {
     mm::address_space::AddressSpace space;
     if (!mm::address_space::create(space)) return false;
@@ -99,6 +207,58 @@ static bool memory_address_space_create(usize) {
 
 static bool scheduler_switch_count(usize) {
     return nord::arch::scheduler::count() != 0;
+}
+
+namespace {
+
+constexpr usize MANY_TASK_COUNT = 20;
+volatile u64 g_many_task_done;
+
+void many_task_run() {
+    __atomic_add_fetch(&g_many_task_done, 1, __ATOMIC_RELAXED);
+    nord::arch::scheduler::exit_current();
+}
+
+} // namespace
+
+static bool scheduler_many_tasks(usize) {
+    using nord::arch::scheduler::create;
+    using nord::arch::scheduler::current_id;
+    using nord::arch::scheduler::yield;
+
+    if (current_id() == 0) return true;
+    g_many_task_done = 0;
+
+    usize created = 0;
+    while (created < MANY_TASK_COUNT) {
+        u32 id = 0;
+        if (!create("many-task", &many_task_run, id)) break;
+        ++created;
+    }
+
+    bool ok = created == MANY_TASK_COUNT;
+    for (u64 spin = 0; spin < 1000000 && g_many_task_done < created; ++spin) yield();
+    ok = ok && g_many_task_done == created;
+    return ok;
+}
+
+static bool nvmfs_node_capacity(usize) {
+    static constexpr usize PROBE_COUNT = 160;
+    nvmfs::NodeId ids[PROBE_COUNT];
+    nvmfs::Error error;
+    usize created = 0;
+    while (created < PROBE_COUNT) {
+        if (!nvmfs::create(nvmfs::NodeType::file, "capacity-probe", 0,
+                           ids[created], error)) break;
+        ++created;
+    }
+
+    bool ok = created == PROBE_COUNT;
+    for (usize i = 0; i < created; ++i) {
+        nvmfs::Error erase_error;
+        if (!nvmfs::erase(ids[i], erase_error)) ok = false;
+    }
+    return ok;
 }
 
 static bool memory_task_stack_guard(usize) {
@@ -365,8 +525,15 @@ namespace {
 static bool register_once = []() -> bool {
     TestSuite::register_test("memory_heap_allocate_deallocate", 3, &memory_heap_allocate_deallocate);
     TestSuite::register_test("memory_pmm_allocate_page", 3, &memory_pmm_allocate_page);
+    TestSuite::register_test("memory_pmm_boundaries", 2, &memory_pmm_boundaries);
+    TestSuite::register_test("memory_heap_boundaries", 2, &memory_heap_boundaries);
     TestSuite::register_test("memory_address_space_create", 3, &memory_address_space_create);
+    TestSuite::register_test("ipc_queue_boundaries", 1, &ipc_queue_boundaries);
+    TestSuite::register_test("nvmfs_snapshot_corruption", 1, &nvmfs_snapshot_corruption);
+    TestSuite::register_test("storage_snapshot_corruption", 1, &storage_snapshot_corruption);
     TestSuite::register_test("scheduler_switch_count", 5, &scheduler_switch_count);
+    TestSuite::register_test("scheduler_many_tasks", 1, &scheduler_many_tasks);
+    TestSuite::register_test("nvmfs_node_capacity", 1, &nvmfs_node_capacity);
     TestSuite::register_test("memory_task_stack_guard", 3, &memory_task_stack_guard);
     TestSuite::register_test("fpu_xmm_context_switch", 1, &fpu_xmm_context_switch);
     TestSuite::register_test("keyboard_queue_order", 5, &keyboard_queue_order);

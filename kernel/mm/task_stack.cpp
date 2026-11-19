@@ -1,6 +1,8 @@
 #include <mm/task_stack.hpp>
 #include <arch/x86_64/cpu/nx.hpp>
 #include <arch/x86_64/io.hpp>
+#include <lib/string.hpp>
+#include <mm/heap.hpp>
 #include <mm/pmm.hpp>
 
 namespace nord::mm::task_stack {
@@ -10,13 +12,15 @@ static constexpr u64 PAGE_WRITABLE = 2;
 static constexpr u64 PAGE_LARGE = 0x80;
 static constexpr u64 PAGE_NX = 1ULL << 63;
 static constexpr u64 PAGE_ADDRESS_MASK = 0x000FFFFFFFFFF000ULL;
-static constexpr usize MAX_STACKS = 16;
+static constexpr u64 PML4_REGION_SIZE = 0x0000008000000000ULL;
 
 static paddr_t g_root;
 static vaddr_t g_base;
 static usize g_stride;
 static usize g_stack_size;
-static bool g_slots[MAX_STACKS];
+static u8* g_slots;
+static usize g_slot_capacity;
+static usize g_slot_count;
 
 static u64* table(paddr_t physical) {
     return pmm::phys_to_virt<u64>(physical);
@@ -46,6 +50,39 @@ static bool map_page(vaddr_t address, paddr_t physical, bool executable) {
     if (pt[index] & PAGE_PRESENT) return false;
     const u64 nx = (!executable && arch::nx_enabled()) ? PAGE_NX : 0;
     pt[index] = physical | PAGE_PRESENT | PAGE_WRITABLE | nx;
+    return true;
+}
+
+static bool grow_slots(usize needed) {
+    if (needed <= g_slot_capacity) return true;
+    usize capacity = g_slot_capacity ? g_slot_capacity : 16;
+    while (capacity < needed) {
+        if (capacity > ~static_cast<usize>(0) / 2) return false;
+        capacity *= 2;
+    }
+    auto* slots = static_cast<u8*>(mm::heap::krealloc(g_slots, capacity));
+    if (!slots) return false;
+    memset(slots + g_slot_capacity, 0, capacity - g_slot_capacity);
+    g_slots = slots;
+    g_slot_capacity = capacity;
+    return true;
+}
+
+static bool reserve_slot(usize& slot) {
+    for (usize i = 0; i < g_slot_count; ++i) {
+        if (!g_slots[i]) {
+            g_slots[i] = 1;
+            slot = i;
+            return true;
+        }
+    }
+    const usize next = g_slot_count;
+    if (!grow_slots(next + 1)) return false;
+    const vaddr_t address = g_base + static_cast<vaddr_t>(next) * g_stride;
+    if (address < g_base || address + g_stride > g_base + PML4_REGION_SIZE) return false;
+    g_slots[next] = 1;
+    g_slot_count = next + 1;
+    slot = next;
     return true;
 }
 
@@ -90,7 +127,6 @@ bool init(usize stack_size) {
         asm volatile("invlpg (%0)" :: "r"(base) : "memory");
 
         g_base = base;
-        for (usize i = 0; i < MAX_STACKS; ++i) g_slots[i] = false;
         return true;
     }
     return false;
@@ -99,8 +135,7 @@ bool init(usize stack_size) {
 void* allocate() {
     if (!g_base) return nullptr;
     usize slot = 0;
-    while (slot < MAX_STACKS && g_slots[slot]) ++slot;
-    if (slot == MAX_STACKS) return nullptr;
+    if (!reserve_slot(slot)) return nullptr;
 
     const vaddr_t base = g_base + static_cast<vaddr_t>(slot) * g_stride + PAGE_SIZE;
     usize mapped = 0;
@@ -116,10 +151,10 @@ void* allocate() {
             const paddr_t physical = unmap_page(base + offset);
             if (physical) pmm::free_page(physical);
         }
+        g_slots[slot] = 0;
         return nullptr;
     }
 
-    g_slots[slot] = true;
     return reinterpret_cast<void*>(base);
 }
 
@@ -135,7 +170,7 @@ void release(void* base) {
         if (physical) pmm::free_page(physical);
     }
     const usize slot = (address - g_base - PAGE_SIZE) / g_stride;
-    if (slot < MAX_STACKS) g_slots[slot] = false;
+    if (slot < g_slot_count) g_slots[slot] = 0;
 }
 
 }

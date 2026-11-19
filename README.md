@@ -26,7 +26,7 @@ and UEFI systems.
 
 - Remapped 8259 PIC, 100 Hz PIT ticks and interrupt-driven PS/2 input queue
 
-- Timer-preemptive single-CPU kernel task scheduler with independent stacks (`nord::arch::scheduler`)
+- Timer-preemptive single-CPU kernel task scheduler with independent stacks (`nord::arch::scheduler`); the task table and task-stack slots grow on demand
 
 - Ring 3 user tasks with per-process address spaces and an ELF64 loader
 
@@ -44,13 +44,15 @@ and UEFI systems.
 
 - 32-bit `NodeId` (`u32`) architecture integrated across IPC, capability rights, and NVMFS storage handles
 
+- Dynamically sized NVMFS node and tag registries backed by the kernel heap instead of fixed tables
+
 - Preemption-safe spinlocks around PMM, NVMFS, and IPC state; every IPC connection gets its own endpoint pair
 
 - Block device abstraction layer (`BlockDevice`) with VirtIO-blk driver registration
 
 - Two-slot NVMFS snapshot mechanism with CRC persistence over block devices
 
-- Kernel-level automated unit testing framework (`kernel/test/`) covering PMM, heap, address spaces, scheduler status, keyboard queue, waiter list and focus rules
+- Kernel-level automated unit testing framework (`kernel/test/`) covering PMM and heap boundary cases, address spaces, scheduler growth, NVMFS registry growth, IPC queue saturation, snapshot corruption rejection, keyboard queue, waiter list and focus rules
 
 - Freestanding command tokenizer with quoted arguments
 
@@ -198,7 +200,7 @@ x86, написанная на freestanding C++23 и NASM. Загружаетс�
 
 * Загрузка Limine, точка входа x86_64, GDT, IDT и обработчики прерываний
 * Переназначенный PIC 8259, тики PIT 100 Гц и очередь ввода PS/2 через IRQ
-* Однопроцессорный планировщик задач ядра с вытеснением по таймеру и отдельными стеками (`nord::arch::scheduler`)
+* Однопроцессорный планировщик задач ядра с вытеснением по таймеру и отдельными стеками (`nord::arch::scheduler`); таблица задач и слоты стеков растут динамически
 * Пользовательские задачи Ring 3 с собственными адресными пространствами и загрузчиком ELF64
 * NX-защита страниц данных и стека, guard-страницы под стеками задач ядра и пользователя
 * Стабильные отчёты об исключениях: дамп регистров, стек вызовов по frame pointer и имена функций из таблицы символов ELF
@@ -208,10 +210,12 @@ x86, написанная на freestanding C++23 и NASM. Загружаетс�
 * Ввод с клавиатуры для user mode: одна пользовательская задача может взять фокус клавиатуры, читать символы блокирующим syscall и вернуть фокус консоли; несколько читателей могут ждать одновременно
 * Архитектура 32-битных `NodeId` (`u32`), интегрированная в IPC, права возможностей и хранилище NVMFS
 
+* Динамические реестры узлов и тегов NVMFS на куче ядра вместо фиксированных таблиц
+
 * Спинлоки с отключением вытеснения вокруг PMM, NVMFS и состояния IPC; каждое IPC-соединение получает собственную пару endpoint'ов
 * Абстракция блочных устройств (`BlockDevice`) с регистрацией драйвера VirtIO-blk
 * Двухслотовый механизм снапшотов NVMFS с защитой CRC поверх блочного слоя
-* Модуль автоматического юнит-тестирования ядра (`kernel/test/`) для PMM, кучи, адресных пространств, планировщика, очереди клавиатуры, списка ожидания и правил фокуса
+* Модуль автоматического юнит-тестирования ядра (`kernel/test/`) для граничных случаев PMM и кучи, адресных пространств, роста планировщика и NVMFS, переполнения очередей IPC, отказа от повреждённых снапшотов, очереди клавиатуры, списка ожидания и правил фокуса
 * Freestanding-токенизатор команд с поддержкой аргументов в кавычках
 
 ## Сборка и запуск
