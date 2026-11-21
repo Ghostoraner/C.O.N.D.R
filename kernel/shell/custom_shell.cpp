@@ -79,9 +79,9 @@ static void error(const char* command, nvmfs::Error code) {
     kprintf("%s: %s\n", command, nvmfs::error_text(code));
 }
 
-static void print_node(const nvmfs::Node& node) {
+static void print_node(const nvmfs::NodeInfo& node) {
     kprintf("%#lx  %s  %s", node.id, nvmfs::type_name(node.type), node.name);
-    if (node.stream.size) kprintf("  [%lu B]", node.stream.size);
+    if (node.stream_size) kprintf("  [%lu B]", node.stream_size);
     kprintf("\n");
 }
 
@@ -132,10 +132,10 @@ static void list_container(nvmfs::NodeId container) {
     nvmfs::Lock guard;
     nvmfs::Directory directory{container};
     usize cursor = 0;
-    nvmfs::Node* node = nullptr;
+    nvmfs::NodeInfo node{};
     bool any = false;
-    while ((node = nvmfs::directory_at(directory, cursor))) {
-        print_node(*node);
+    while (nvmfs::directory_at(directory, cursor, node)) {
+        print_node(node);
         any = true;
     }
     if (!any) kprintf("(empty space)\n");
@@ -145,8 +145,8 @@ static void command_vault(const TokenList& tokens) {
     nvmfs::Lock guard;
     if (tokens.count == 1) {
         for (usize i = 0; i < nvmfs::count(); ++i) {
-            nvmfs::Node* node = nvmfs::at(i);
-            if (node && node->type == nvmfs::NodeType::vault) print_node(*node);
+            nvmfs::NodeInfo node{};
+            if (nvmfs::at(i, node) && node.type == nvmfs::NodeType::vault) print_node(node);
         }
         return;
     }
@@ -162,15 +162,15 @@ static void command_cd(const TokenList& tokens) {
     nvmfs::Lock guard;
     if (tokens.count != 2) { kprintf("usage: cd ID|..\n"); return; }
     if (equal(tokens.value[1], "..")) {
-        nvmfs::Node* current = nvmfs::find(g_context);
-        g_context = current ? current->container_id : 0;
+        nvmfs::NodeInfo current{};
+        g_context = nvmfs::find(g_context, current) ? current.container_id : 0;
         return;
     }
     nvmfs::NodeId id;
     if (!parse_id(tokens.value[1], id)) { kprintf("cd: invalid object ID\n"); return; }
-    nvmfs::Node* node = nvmfs::find(id);
-    if (!node || (node->type != nvmfs::NodeType::vault
-        && node->type != nvmfs::NodeType::directory)) {
+    nvmfs::NodeInfo node{};
+    if (!nvmfs::find(id, node) || (node.type != nvmfs::NodeType::vault
+        && node.type != nvmfs::NodeType::directory)) {
         kprintf("cd: target is not a container\n");
         return;
     }
@@ -197,8 +197,8 @@ static void command_find(const TokenList& tokens) {
     nvmfs::NodeId id;
     bool any = false;
     while (nvmfs::find_tag(key, value, cursor, id)) {
-        nvmfs::Node* node = nvmfs::find(id);
-        if (node) { print_node(*node); any = true; }
+        nvmfs::NodeInfo node{};
+        if (nvmfs::find(id, node)) { print_node(node); any = true; }
     }
     if (!any) kprintf("no object tagged %s=%s\n", key, value);
 }
@@ -207,9 +207,9 @@ static void command_stat(const TokenList& tokens) {
     nvmfs::Lock guard;
     nvmfs::NodeId id;
     if (tokens.count != 2 || !parse_id(tokens.value[1], id)) { kprintf("usage: stat ID\n"); return; }
-    nvmfs::Node* node = nvmfs::find(id);
-    if (!node) { kprintf("stat: object not found\n"); return; }
-    print_node(*node);
+    nvmfs::NodeInfo node{};
+    if (!nvmfs::find(id, node)) { kprintf("stat: object not found\n"); return; }
+    print_node(node);
     usize cursor = 0;
     nvmfs::TagView tag{};
     while (nvmfs::tag_at(cursor, tag))
@@ -254,10 +254,10 @@ static void command_get(const TokenList& tokens) {
     nvmfs::Lock guard;
     nvmfs::NodeId id;
     if (tokens.count != 2 || !parse_id(tokens.value[1], id)) { kprintf("usage: get ID\n"); return; }
-    nvmfs::Node* node = nvmfs::find(id);
-    if (!node) { kprintf("get: object not found\n"); return; }
-    for (usize i = 0; i < node->stream.size; ++i) kprintf("%c", static_cast<char>(node->stream.bytes[i]));
-    if (node->stream.size && node->stream.bytes[node->stream.size - 1] != '\n') kprintf("\n");
+    nvmfs::NodeInfo node{};
+    if (!nvmfs::find(id, node)) { kprintf("get: object not found\n"); return; }
+    for (usize i = 0; i < node.stream_size; ++i) kprintf("%c", static_cast<char>(node.stream[i]));
+    if (node.stream_size && node.stream[node.stream_size - 1] != '\n') kprintf("\n");
 }
 
 static void command_sync() {
@@ -419,9 +419,9 @@ static void execute(const char* input) {
     if (equal(command, "cd")) { command_cd(tokens); return; }
     if (equal(command, "pwd")) {
         nvmfs::Lock guard;
-        nvmfs::Node* node = nvmfs::find(g_context);
-        if (!node) kprintf("condr:/\n");
-        else kprintf("condr:/%s [%#lx]\n", node->name, node->id);
+        nvmfs::NodeInfo node{};
+        if (!nvmfs::find(g_context, node)) kprintf("condr:/\n");
+        else kprintf("condr:/%s [%#lx]\n", node.name, node.id);
         return;
     }
     if (equal(command, "mkdir")) { command_create(tokens, nvmfs::NodeType::directory); return; }
@@ -498,9 +498,9 @@ static void execute(const char* input) {
             length = 0;
             line[0] = '\0';
             nvmfs::Lock guard;
-            nvmfs::Node* context = nvmfs::find(g_context);
-            if (!context) kprintf("condr:/# ");
-            else kprintf("condr:/%s# ", context->name);
+            nvmfs::NodeInfo context{};
+            if (!nvmfs::find(g_context, context)) kprintf("condr:/# ");
+            else kprintf("condr:/%s# ", context.name);
         } else if (character == '\b') {
             if (length) { --length; kprintf("\b \b"); }
         } else if (character >= 0x20 && character <= 0x7e && length + 1 < sizeof(line)) {

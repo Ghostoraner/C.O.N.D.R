@@ -172,9 +172,10 @@ static bool nvmfs_snapshot_corruption(usize) {
     if (ok && nvmfs::deserialize(snapshot, size - 1)) ok = false;
 
     if (ok) {
-        nvmfs::Node* node = nvmfs::find(id);
-        ok = node && node->stream.size == sizeof(probe_data) - 1
-            && memcmp(node->stream.bytes, probe_data, sizeof(probe_data) - 1) == 0;
+        nvmfs::Lock guard;
+        nvmfs::NodeInfo node{};
+        ok = nvmfs::find(id, node) && node.stream_size == sizeof(probe_data) - 1
+            && memcmp(node.stream, probe_data, sizeof(probe_data) - 1) == 0;
     }
 
     mm::heap::kfree(snapshot);

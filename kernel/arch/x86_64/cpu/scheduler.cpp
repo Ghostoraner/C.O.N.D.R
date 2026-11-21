@@ -45,6 +45,19 @@ static constexpr u64 INITIAL_FRAME_WORDS = 22;
 
 extern "C" void isr_yield();
 
+// IRQ handlers call wake(), which walks g_tasks. Table growth must therefore
+// keep interrupts disabled until both the array pointer and capacity are
+// published, otherwise an IRQ can observe a freed array.
+struct InterruptGuard {
+    InterruptGuard() {
+        asm volatile("pushfq; pop %0; cli" : "=r"(flags) :: "memory");
+    }
+    ~InterruptGuard() {
+        asm volatile("push %0; popfq" :: "r"(flags) : "memory", "cc");
+    }
+    u64 flags;
+};
+
 static bool grow_tasks(usize needed) {
     if (needed <= g_task_capacity) return true;
     usize capacity = g_task_capacity ? g_task_capacity : 8;
@@ -52,6 +65,7 @@ static bool grow_tasks(usize needed) {
         if (capacity > ~static_cast<usize>(0) / 2) return false;
         capacity *= 2;
     }
+    InterruptGuard guard;
     auto** tasks = static_cast<Task**>(
         mm::heap::krealloc(g_tasks, capacity * sizeof(Task*)));
     if (!tasks) return false;

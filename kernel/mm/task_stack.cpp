@@ -1,11 +1,17 @@
 #include <mm/task_stack.hpp>
 #include <arch/x86_64/cpu/nx.hpp>
+#include <arch/x86_64/cpu/scheduler.hpp>
 #include <arch/x86_64/io.hpp>
 #include <lib/string.hpp>
 #include <mm/heap.hpp>
 #include <mm/pmm.hpp>
 
 namespace nord::mm::task_stack {
+
+struct PreemptionGuard {
+    PreemptionGuard() { arch::scheduler::preempt_disable(); }
+    ~PreemptionGuard() { arch::scheduler::preempt_enable(); }
+};
 
 static constexpr u64 PAGE_PRESENT = 1;
 static constexpr u64 PAGE_WRITABLE = 2;
@@ -133,6 +139,7 @@ bool init(usize stack_size) {
 }
 
 void* allocate() {
+    PreemptionGuard guard;
     if (!g_base) return nullptr;
     usize slot = 0;
     if (!reserve_slot(slot)) return nullptr;
@@ -163,6 +170,7 @@ u64 top(const void* base) {
 }
 
 void release(void* base) {
+    PreemptionGuard guard;
     if (!base || !g_base) return;
     const vaddr_t address = reinterpret_cast<vaddr_t>(base);
     for (usize offset = 0; offset < g_stack_size; offset += PAGE_SIZE) {

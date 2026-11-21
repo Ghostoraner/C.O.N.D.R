@@ -43,6 +43,20 @@ struct Node {
     FileStream stream;
 };
 
+// Detached copy of a node. Returned by the lookup helpers so callers never
+// hold a pointer into the node table after the internal lock is released.
+// `stream` remains owned by NVMFS and is only valid while a Lock is held.
+struct NodeInfo {
+    NodeId id;
+    NodeId container_id;
+    NodeType type;
+    u32 owner;
+    u8 rights;
+    char name[48];
+    const u8* stream;
+    usize stream_size;
+};
+
 struct TagIndex {
     NodeId node_id;
     bool active;
@@ -50,10 +64,11 @@ struct TagIndex {
     char value[48];
 };
 
+// Values are copied out of the tag table, which may be reallocated by add_tag.
 struct TagView {
     NodeId node_id;
-    const char* key;
-    const char* value;
+    char key[24];
+    char value[48];
 };
 
 struct Directory {
@@ -72,8 +87,9 @@ enum class Right : u8 {
 
 using ChangeHook = void (*)();
 
-// RAII guard for callers that need to keep a raw Node* valid across several
-// operations. Individual NVMFS calls are already internally serialized.
+// RAII guard for callers that need a stable view of the node table across
+// several operations. Individual NVMFS calls are already internally
+// serialized; this only extends that serialization over a sequence of calls.
 class Lock {
 public:
     Lock();
@@ -86,9 +102,9 @@ void init();
 void set_change_hook(ChangeHook hook);
 bool create(NodeType type, const char* name, NodeId container_id,
             NodeId& result, Error& error);
-Node* find(NodeId id);
-Node* at(usize active_position);
-Node* directory_at(const Directory& directory, usize& cursor);
+bool find(NodeId id, NodeInfo& info);
+bool at(usize active_position, NodeInfo& info);
+bool directory_at(const Directory& directory, usize& cursor, NodeInfo& info);
 usize count();
 
 bool add_tag(NodeId id, const char* key, const char* value, Error& error);

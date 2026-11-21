@@ -126,6 +126,26 @@ static bool same(const char* left, const char* right) {
     return left && right && strcmp(left, right) == 0;
 }
 
+static Node* find_node(NodeId id) {
+    if (!id) return nullptr;
+    for (usize i = 0; i < g_node_capacity; ++i) {
+        Node* node = g_nodes[i];
+        if (node && node->active && node->id == id) return node;
+    }
+    return nullptr;
+}
+
+static void snapshot(const Node& node, NodeInfo& info) {
+    info.id = node.id;
+    info.container_id = node.container_id;
+    info.type = node.type;
+    info.owner = node.owner;
+    info.rights = node.rights;
+    memcpy(info.name, node.name, NAME_CAPACITY);
+    info.stream = node.stream.bytes;
+    info.stream_size = node.stream.size;
+}
+
 static TagIndex* find_tag_entry(NodeId id, const char* key, const char* value) {
     for (usize i = 0; i < g_tag_capacity; ++i) {
         TagIndex& entry = g_tag_index[i];
@@ -160,7 +180,7 @@ bool create(NodeType type, const char* node_name, NodeId container_id,
         return false;
     }
     if (container_id) {
-        Node* container = find(container_id);
+        Node* container = find_node(container_id);
         if (!container) { error = Error::not_found; return false; }
         if (container->type != NodeType::vault && container->type != NodeType::directory) {
             error = Error::invalid_argument;
@@ -199,33 +219,37 @@ bool create(NodeType type, const char* node_name, NodeId container_id,
     return true;
 }
 
-Node* find(NodeId id) {
+bool find(NodeId id, NodeInfo& info) {
     Lock guard;
-    if (!id) return nullptr;
-    for (usize i = 0; i < g_node_capacity; ++i) {
-        Node* node = g_nodes[i];
-        if (node && node->active && node->id == id) return node;
-    }
-    return nullptr;
+    Node* node = find_node(id);
+    if (!node) return false;
+    snapshot(*node, info);
+    return true;
 }
 
-Node* at(usize active_position) {
+bool at(usize active_position, NodeInfo& info) {
     Lock guard;
     for (usize i = 0; i < g_node_capacity; ++i) {
         Node* node = g_nodes[i];
         if (!node || !node->active) continue;
-        if (active_position-- == 0) return node;
+        if (active_position-- == 0) {
+            snapshot(*node, info);
+            return true;
+        }
     }
-    return nullptr;
+    return false;
 }
 
-Node* directory_at(const Directory& directory, usize& cursor) {
+bool directory_at(const Directory& directory, usize& cursor, NodeInfo& info) {
     Lock guard;
     while (cursor < g_node_capacity) {
         Node* node = g_nodes[cursor++];
-        if (node && node->active && node->container_id == directory.container_id) return node;
+        if (node && node->active && node->container_id == directory.container_id) {
+            snapshot(*node, info);
+            return true;
+        }
     }
-    return nullptr;
+    return false;
 }
 
 usize count() {
@@ -235,7 +259,7 @@ usize count() {
 
 bool add_tag(NodeId id, const char* key, const char* value, Error& error) {
     Lock guard;
-    Node* node = find(id);
+    Node* node = find_node(id);
     if (!node) { error = Error::not_found; return false; }
     if (!key || !*key || !value || length(key) >= TAG_KEY_CAPACITY
         || length(value) >= TAG_VALUE_CAPACITY) {
@@ -286,7 +310,7 @@ bool find_tag(const char* key, const char* value, usize& cursor, NodeId& result)
     while (cursor < g_tag_capacity) {
         const TagIndex& entry = g_tag_index[cursor++];
         if (entry.active && same(entry.key, key) && same(entry.value, value)
-            && find(entry.node_id)) {
+            && find_node(entry.node_id)) {
             result = entry.node_id;
             return true;
         }
@@ -298,8 +322,10 @@ bool tag_at(usize& cursor, TagView& result) {
     Lock guard;
     while (cursor < g_tag_capacity) {
         const TagIndex& entry = g_tag_index[cursor++];
-        if (!entry.active || !find(entry.node_id)) continue;
-        result = {entry.node_id, entry.key, entry.value};
+        if (!entry.active || !find_node(entry.node_id)) continue;
+        result.node_id = entry.node_id;
+        memcpy(result.key, entry.key, TAG_KEY_CAPACITY);
+        memcpy(result.value, entry.value, TAG_VALUE_CAPACITY);
         return true;
     }
     return false;
@@ -307,7 +333,7 @@ bool tag_at(usize& cursor, TagView& result) {
 
 bool write(NodeId id, const void* bytes, usize size, bool append, Error& error) {
     Lock guard;
-    Node* node = find(id);
+    Node* node = find_node(id);
     if (!node) { error = Error::not_found; return false; }
     if (node->type != NodeType::file) { error = Error::invalid_argument; return false; }
     if (size && !bytes) { error = Error::invalid_argument; return false; }
@@ -424,7 +450,7 @@ void stats(u64& nodes, u64& tags, u64& stream_bytes, u64& stream_limit) {
 bool set_owner(NodeId id, u32 owner, Error& error) {
     Lock guard;
     if (!g_initialized) { error = Error::not_initialized; return false; }
-    Node* node = find(id);
+    Node* node = find_node(id);
     if (!node) { error = Error::not_found; return false; }
     node->owner = owner;
     notify_change();
@@ -435,7 +461,7 @@ bool set_owner(NodeId id, u32 owner, Error& error) {
 bool set_rights(NodeId id, u8 rights, Error& error) {
     Lock guard;
     if (!g_initialized) { error = Error::not_initialized; return false; }
-    Node* node = find(id);
+    Node* node = find_node(id);
     if (!node) { error = Error::not_found; return false; }
     node->rights = rights;
     notify_change();
@@ -446,7 +472,7 @@ bool set_rights(NodeId id, u8 rights, Error& error) {
 bool check_rights(NodeId id, u8 required, bool& has) {
     Lock guard;
     if (!g_initialized) { has = false; return false; }
-    Node* node = find(id);
+    Node* node = find_node(id);
     if (!node) { has = false; return false; }
     has = (node->rights & required) == required;
     return true;
@@ -455,7 +481,7 @@ bool check_rights(NodeId id, u8 required, bool& has) {
 u8 rights_of(NodeId id) {
     Lock guard;
     if (!g_initialized) return 0;
-    Node* node = find(id);
+    Node* node = find_node(id);
     return node ? node->rights : 0;
 }
 
