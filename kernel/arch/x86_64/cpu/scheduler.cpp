@@ -16,7 +16,10 @@ static constexpr usize NAME_SIZE = 24;
 
 struct Task {
     u32 id;
+    u32 parent;
+    i32 status;
     bool active;
+    bool resources_released;
     State state;
     Entry entry;
     Registers* frame;
@@ -114,7 +117,7 @@ static Task* next_ready() {
 [[noreturn]] static void task_bootstrap() {
     Task* task = g_current;
     task->entry();
-    exit_current();
+    exit_current(0);
 }
 
 static Task* allocate_task(const char* name, u32& id) {
@@ -132,6 +135,7 @@ static Task* allocate_task(const char* name, u32& id) {
 
     memset(task, 0, sizeof(*task));
     task->id = g_next_id++;
+    task->parent = g_current ? g_current->id : 0;
     task->active = true;
     task->state = State::ready;
     task->stack = stack;
@@ -161,15 +165,45 @@ static Registers* initial_frame(Task& task, u64 entry, u64 code_selector,
     return task.frame;
 }
 
-static void reap_retired_task() {
-    if (!g_retired_task) return;
-    Task* task = g_retired_task;
+static Task* find_task(u32 id) {
+    for (usize i = 0; i < g_task_capacity; ++i) {
+        if (g_tasks[i] && g_tasks[i]->id == id) return g_tasks[i];
+    }
+    return nullptr;
+}
+
+// The kernel stack cannot be unmapped while schedule() is still running on
+// it, so a zombie's resources are retired on the next scheduling round.
+static void release_resources(Task* task) {
+    if (task->resources_released) return;
+    task->resources_released = true;
     ipc::close_task(task->id);
     // A task that exited while blocked in a keyboard read must not leave a
     // stale waiter registration behind.
     keyboard::clear_waiter(task->id);
     if (task->user_mode) mm::address_space::destroy(task->space);
     if (task->stack) mm::task_stack::release(task->stack);
+    task->stack = nullptr;
+}
+
+static void destroy_task(Task* task);
+
+static bool waitable(const Task* task) {
+    if (!task->parent) return false;
+    Task* parent = find_task(task->parent);
+    return parent && parent->state != State::zombie;
+}
+
+static void destroy_task(Task* task) {
+    release_resources(task);
+    // Children of a dying task can never be waited for. Reparent them to the
+    // reaper and release any zombie that is already collectable.
+    for (usize i = 0; i < g_task_capacity; ++i) {
+        Task* child = g_tasks[i];
+        if (!child || child == task || child->parent != task->id) continue;
+        child->parent = 0;
+        if (child->state == State::zombie && child->resources_released) destroy_task(child);
+    }
     for (usize i = 0; i < g_task_capacity; ++i) {
         if (g_tasks[i] == task) {
             g_tasks[i] = nullptr;
@@ -178,7 +212,16 @@ static void reap_retired_task() {
     }
     mm::heap::kfree(task);
     --g_count;
+}
+
+static void retire_retired_task() {
+    if (!g_retired_task) return;
+    Task* task = g_retired_task;
     g_retired_task = nullptr;
+    release_resources(task);
+    // Tasks without a living parent are not observable through wait(), so
+    // their zombie record is reclaimed immediately.
+    if (!waitable(task)) destroy_task(task);
 }
 
 void init() {
@@ -242,13 +285,13 @@ void preempt_enable() {
 Registers* schedule(Registers* frame) {
     if (!g_running || g_preempt_depth) return frame;
 
-    reap_retired_task();
+    retire_retired_task();
 
     Task* previous = g_current;
     if (previous) {
         fpu::save(previous->fpu_state);
         if (previous->state == State::running) previous->state = State::ready;
-        if (previous->state != State::exited) previous->frame = frame;
+        if (previous->state != State::zombie) previous->frame = frame;
     } else {
         fpu::save(g_boot_fpu);
         g_boot_frame = frame;
@@ -257,7 +300,7 @@ Registers* schedule(Registers* frame) {
     Task* next = next_ready();
     if (!next) {
         g_current = nullptr;
-        if (previous && previous->state == State::exited) g_retired_task = previous;
+        if (previous && previous->state == State::zombie) g_retired_task = previous;
         if ((arch::read_cr3() & 0x000FFFFFFFFFF000ULL) != g_kernel_cr3)
             arch::write_cr3(g_kernel_cr3);
         gdt::set_kernel_stack(g_boot_rsp0);
@@ -265,7 +308,7 @@ Registers* schedule(Registers* frame) {
         return g_boot_frame ? g_boot_frame : frame;
     }
 
-    if (previous && previous->state == State::exited) g_retired_task = previous;
+    if (previous && previous->state == State::zombie) g_retired_task = previous;
 
     next->state = State::running;
     ++next->switches;
@@ -301,17 +344,63 @@ void wake(u32 id) {
     }
 }
 
-void mark_current_exited() {
-    if (g_current) {
-        keyboard::clear_waiter(g_current->id);
-        g_current->state = State::exited;
-    }
+static void become_zombie(i32 status) {
+    if (!g_current) return;
+    keyboard::clear_waiter(g_current->id);
+    g_current->status = status;
+    g_current->state = State::zombie;
+    if (g_current->parent) wake(g_current->parent);
 }
 
-[[noreturn]] void exit_current() {
-    if (g_current) g_current->state = State::exited;
+void mark_current_exited(i32 status) {
+    become_zombie(status);
+}
+
+[[noreturn]] void exit_current(i32 status) {
+    become_zombie(status);
     isr_yield();
     halt_forever();
+}
+
+// Blocks the caller until one of its children becomes a zombie, then reclaims
+// the child's PML4, pages, kernel stack and task record. `pid > 0` selects a
+// specific child; `pid <= 0` waits for any child.
+bool wait(i32 pid, i32& status, u32& child_id) {
+    if (!g_running || !g_current) return false;
+    const u32 parent = g_current->id;
+    for (;;) {
+        // Interrupts stay disabled while scanning and blocking, otherwise a
+        // child could exit between the scan and the blocking switch and the
+        // wakeup would be lost.
+        InterruptGuard guard;
+        bool has_child = false;
+        Task* zombie = nullptr;
+        for (usize i = 0; i < g_task_capacity; ++i) {
+            Task* task = g_tasks[i];
+            if (!task || task->parent != parent) continue;
+            if (pid > 0 && task->id != static_cast<u32>(pid)) continue;
+            has_child = true;
+            if (task->state == State::zombie) {
+                zombie = task;
+                break;
+            }
+        }
+        if (!has_child) return false;
+        if (zombie) {
+            status = zombie->status;
+            child_id = zombie->id;
+            // The zombie may not have been retired yet; its stack is no longer
+            // in use, so it can be reclaimed right here.
+            if (g_retired_task == zombie) {
+                release_resources(zombie);
+                g_retired_task = nullptr;
+            }
+            destroy_task(zombie);
+            return true;
+        }
+        g_current->state = State::blocked;
+        isr_yield();
+    }
 }
 
 [[noreturn]] void run() {
@@ -333,7 +422,7 @@ bool at(usize position, TaskInfo& info) {
         const Task* task = g_tasks[i];
         if (!task || !task->active) continue;
         if (position-- != 0) continue;
-        info = {task->id, task->name, task->state, task->switches};
+        info = {task->id, task->parent, task->status, task->name, task->state, task->switches};
         return true;
     }
     return false;

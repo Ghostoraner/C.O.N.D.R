@@ -123,8 +123,11 @@ static void command_ps() {
         if (!arch::scheduler::at(i, task)) continue;
         const char* state = task.state == arch::scheduler::State::running ? "running"
             : task.state == arch::scheduler::State::ready ? "ready"
-            : task.state == arch::scheduler::State::blocked ? "blocked" : "exited";
-        kprintf("%u  %s  %s  switches=%lu\n", task.id, state, task.name, task.switches);
+            : task.state == arch::scheduler::State::blocked ? "blocked" : "zombie";
+        kprintf("%u  %s  %s  parent=%u switches=%lu", task.id, state, task.name,
+                task.parent, task.switches);
+        if (task.state == arch::scheduler::State::zombie) kprintf(" status=%d", task.status);
+        kprintf("\n");
     }
 }
 
@@ -289,6 +292,12 @@ static void command_kbd_demo() {
         return;
     }
     kprintf("kbd-demo started\n");
+    i32 status = 0;
+    u32 child = 0;
+    if (!arch::scheduler::wait(static_cast<i32>(id), status, child))
+        kprintf("kbd-demo: wait failed\n");
+    else
+        kprintf("kbd-demo: exit status=%d\n", status);
 }
 
 static void command_sys() {

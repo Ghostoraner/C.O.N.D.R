@@ -38,7 +38,7 @@ extern "C" Registers* isr_dispatch(Registers* r) {
         if (r->vector == 3 && idt::handler_for(3)) return r;
         if ((r->cs & 3) == 3) {
             kprintf("[user] task fault vector=%lu rip=%p\n", r->vector, (void*)r->rip);
-            scheduler::mark_current_exited();
+            scheduler::mark_current_exited(static_cast<i32>(128 + r->vector));
             return scheduler::schedule(r);
         }
         panic_set_frame(r);

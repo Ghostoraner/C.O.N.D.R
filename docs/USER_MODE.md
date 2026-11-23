@@ -23,7 +23,7 @@ User programs invoke `int 0x80` with the syscall number in `RAX`:
 | Number | Operation | Arguments | Result |
 |---|---|---|---|
 | `1` | `write` | `RDI` user buffer, `RSI` byte count (maximum 256) | bytes written, or `-1` |
-| `2` | `exit` | `RDI` exit status (currently ignored) | task is terminated |
+| `2` | `exit` | `RDI` exit status | task becomes a zombie, status collected by `wait` |
 | `3` | `service_register` | `RDI` name, `RSI` length (1-23) | accept handle |
 | `4` | `service_connect` | `RDI` name, `RSI` length | send/receive handle |
 | `5` | `service_accept` | `RDI` listener handle | connected endpoint handle, or `-11` |
@@ -31,6 +31,16 @@ User programs invoke `int 0x80` with the syscall number in `RAX`:
 | `7` | `ipc_receive` | `RDI` handle, `RSI` output buffer, `RDX` capacity (at least 64) | message length, or `-11` |
 | `8` | `read_char` | `RDI` user buffer pointer, `RSI` capacity (1-256) | `1` byte written, `-1` invalid pointer/capacity, `-11` caller lacks keyboard focus |
 | `9` | `kbd_focus` | `RDI != 0` takes focus, `RDI == 0` returns it to the console | `0`, or `-11` if the request was rejected |
+| `10` | `wait` | `RDI` child pid (`<= 0` waits for any child), `RSI` user `i32` status output | child pid, `-1` invalid status pointer, `-10` no matching child |
+
+## Process lifecycle
+
+A task moves through `ready`, `running`, `blocked` and `zombie` states. `exit`
+records the status and leaves a zombie record so the parent can collect it.
+`wait` blocks until a matching child becomes a zombie, copies its exit status to
+the user buffer, then reclaims the child's PML4, user pages, kernel stack and
+task record. Tasks whose parent is gone are reclaimed automatically at the next
+scheduling round. `ps` shows `parent=` and, for zombies, `status=`.
 
 The kernel validates user ranges by walking the current address space before
 copying data. Service names are indexed in NVMFS, while IPC handles are bound to

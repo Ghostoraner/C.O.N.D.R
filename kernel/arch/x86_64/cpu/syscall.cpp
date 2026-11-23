@@ -17,6 +17,7 @@ static constexpr u64 SYS_IPC_SEND = 6;
 static constexpr u64 SYS_IPC_RECEIVE = 7;
 static constexpr u64 SYS_READ_CHAR = 8;
 static constexpr u64 SYS_KBD_FOCUS = 9;
+static constexpr u64 SYS_WAIT = 10;
 static constexpr usize MAX_WRITE_SIZE = 256;
 static constexpr usize MAX_READ_CHAR_SIZE = 256;
 static constexpr usize MAX_SERVICE_NAME = 24;
@@ -45,11 +46,33 @@ void dispatch(Registers* registers) {
         return;
     }
     if (registers->rax == SYS_EXIT) {
-        scheduler::mark_current_exited();
+        scheduler::mark_current_exited(static_cast<i32>(registers->rdi));
         registers->rax = 0;
         return;
     }
     auto* space = scheduler::current_address_space();
+    if (registers->rax == SYS_WAIT) {
+        const vaddr_t status_out = registers->rsi;
+        i32 status = 0;
+        // Validate the user pointer before blocking: a bad buffer fails
+        // immediately instead of sleeping first.
+        if (!space || !status_out
+            || !mm::address_space::copy_to_user(*space, status_out, &status, sizeof(status))) {
+            registers->rax = static_cast<u64>(-1);
+            return;
+        }
+        u32 child_id = 0;
+        if (!scheduler::wait(static_cast<i32>(registers->rdi), status, child_id)) {
+            registers->rax = static_cast<u64>(-10);
+            return;
+        }
+        if (!mm::address_space::copy_to_user(*space, status_out, &status, sizeof(status))) {
+            registers->rax = static_cast<u64>(-1);
+            return;
+        }
+        registers->rax = child_id;
+        return;
+    }
     if (registers->rax == SYS_SERVICE_REGISTER || registers->rax == SYS_SERVICE_CONNECT) {
         char name[MAX_SERVICE_NAME];
         if (!read_service_name(space, registers, name)) {

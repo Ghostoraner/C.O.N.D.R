@@ -9,11 +9,13 @@ enum class State : u8 {
     ready,
     running,
     blocked,
-    exited,
+    zombie,
 };
 
 struct TaskInfo {
     u32 id;
+    u32 parent;
+    i32 status;
     const char* name;
     State state;
     u64 switches;
@@ -29,8 +31,9 @@ bool create_user(const char* name, mm::address_space::AddressSpace& space,
 void yield();
 void block_current();
 void wake(u32 id);
-void mark_current_exited();
-[[noreturn]] void exit_current();
+void mark_current_exited(i32 status);
+[[noreturn]] void exit_current(i32 status);
+bool wait(i32 pid, i32& status, u32& child_id);
 void preempt_disable();
 void preempt_enable();
 Registers* schedule(Registers* frame);

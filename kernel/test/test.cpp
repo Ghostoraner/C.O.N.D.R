@@ -217,7 +217,7 @@ volatile u64 g_many_task_done;
 
 void many_task_run() {
     __atomic_add_fetch(&g_many_task_done, 1, __ATOMIC_RELAXED);
-    nord::arch::scheduler::exit_current();
+    nord::arch::scheduler::exit_current(0);
 }
 
 } // namespace
@@ -230,17 +230,71 @@ static bool scheduler_many_tasks(usize) {
     if (current_id() == 0) return true;
     g_many_task_done = 0;
 
+    u32 ids[MANY_TASK_COUNT]{};
     usize created = 0;
     while (created < MANY_TASK_COUNT) {
         u32 id = 0;
         if (!create("many-task", &many_task_run, id)) break;
-        ++created;
+        ids[created++] = id;
     }
 
     bool ok = created == MANY_TASK_COUNT;
     for (u64 spin = 0; spin < 1000000 && g_many_task_done < created; ++spin) yield();
     ok = ok && g_many_task_done == created;
+
+    for (usize i = 0; i < created; ++i) {
+        i32 status = -1;
+        u32 child = 0;
+        if (!nord::arch::scheduler::wait(static_cast<i32>(ids[i]), status, child)
+            || child != ids[i] || status != 0) ok = false;
+    }
     return ok;
+}
+
+namespace {
+
+constexpr i32 LIFECYCLE_STATUS = 42;
+
+void lifecycle_child() {
+    nord::arch::scheduler::exit_current(LIFECYCLE_STATUS);
+}
+
+bool lifecycle_cycle(u64& pmm_after) {
+    using nord::arch::scheduler::create;
+    using nord::arch::scheduler::wait;
+
+    u32 id = 0;
+    if (!create("lifecycle-child", &lifecycle_child, id)) return false;
+    i32 status = 0;
+    u32 child = 0;
+    if (!wait(static_cast<i32>(id), status, child)) return false;
+    if (child != id || status != LIFECYCLE_STATUS) return false;
+    pmm_after = mm::pmm::used_bytes();
+    return true;
+}
+
+} // namespace
+
+// A child exits with a status that wait() collects. Repeating the cycle must
+// leave the task table and the page allocator at the same level, proving the
+// PML4, pages and kernel stack were reclaimed.
+static bool process_lifecycle(usize) {
+    using nord::arch::scheduler::count;
+    using nord::arch::scheduler::current_id;
+
+    if (current_id() == 0) return true;
+    const usize tasks_before = count();
+
+    // The first cycle may grow the task table and stack page tables; take the
+    // baseline after that warm-up so the measured cycles must be leak-free.
+    u64 baseline = 0;
+    u64 after_first = 0;
+    u64 after_second = 0;
+    if (!lifecycle_cycle(baseline)) return false;
+    if (!lifecycle_cycle(after_first)) return false;
+    if (!lifecycle_cycle(after_second)) return false;
+    if (count() != tasks_before) return false;
+    return baseline == after_first && after_first == after_second;
 }
 
 static bool nvmfs_node_capacity(usize) {
@@ -323,7 +377,7 @@ void xmm_task_run(XmmTaskState& state) {
         state.progress = state.progress + 1;
     }
     state.done = true;
-    nord::arch::scheduler::exit_current();
+    nord::arch::scheduler::exit_current(0);
 }
 
 void xmm_task_a() { xmm_task_run(g_xmm_tasks[0]); }
@@ -372,14 +426,24 @@ static bool fpu_xmm_context_switch(usize) {
         yield();
     }
 
-    if (!(a.done && b.done)) {
+    const bool completed = a.done && b.done;
+    if (!completed) {
         a.stop = true;
         b.stop = true;
-        for (usize i = 0; i < 64; ++i) yield();
-        return false;
     }
 
-    return a.mismatches == 0 && b.mismatches == 0
+    // Collect both children even on timeout so the task table stays clean.
+    i32 status_a = -1;
+    i32 status_b = -1;
+    u32 child_a = 0;
+    u32 child_b = 0;
+    const bool reaped = nord::arch::scheduler::wait(static_cast<i32>(id_a), status_a, child_a)
+        && nord::arch::scheduler::wait(static_cast<i32>(id_b), status_b, child_b)
+        && child_a == id_a && child_b == id_b && status_a == 0 && status_b == 0;
+
+    if (!completed) return false;
+
+    return reaped && a.mismatches == 0 && b.mismatches == 0
         && a.progress == XMM_TEST_ITERATIONS && b.progress == XMM_TEST_ITERATIONS;
 }
 
@@ -534,6 +598,7 @@ static bool register_once = []() -> bool {
     TestSuite::register_test("storage_snapshot_corruption", 1, &storage_snapshot_corruption);
     TestSuite::register_test("scheduler_switch_count", 5, &scheduler_switch_count);
     TestSuite::register_test("scheduler_many_tasks", 1, &scheduler_many_tasks);
+    TestSuite::register_test("process_lifecycle", 2, &process_lifecycle);
     TestSuite::register_test("nvmfs_node_capacity", 1, &nvmfs_node_capacity);
     TestSuite::register_test("memory_task_stack_guard", 3, &memory_task_stack_guard);
     TestSuite::register_test("fpu_xmm_context_switch", 1, &fpu_xmm_context_switch);
