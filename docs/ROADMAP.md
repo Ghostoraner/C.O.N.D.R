@@ -44,13 +44,13 @@ Minimum viable **CLI-OS** is complete at **Gate 5**. Phases 6 and 7 are post-CLI
 
 **Gate 1:** `make test` passes in CI; deliberate kernel stack overflow and user-mode write to kernel memory are caught cleanly without rebooting the machine.
 
----
+---s
 
 ### Phase 2: Processes & System Calls
 *Goal: Transition from embedded kernel demos to a full process lifecycle.*
 - [x] Process lifecycle: `ready`, `running`, `blocked`, `zombie` states; `exit(status)` and `wait`/`waitpid`; full PML4, page, and kernel stack reclamation.
-- [ ] Configurable dynamic task table (list or slab allocator).
-- [ ] Blocking calls: `ipc_receive`, `read_char`, and `sleep_ms` transition tasks to `blocked` and wake via IRQ/IPC rather than busy-waiting.
+- [x] Configurable dynamic task table (list or slab allocator).
+- [x] Blocking calls: `ipc_receive`, `read_char`, and `sleep_ms` transition tasks to `blocked` and wake via IRQ/IPC rather than busy-waiting.
 - [ ] `spawn(path, argv, envp)`: load ELF from storage and initialize user stack per System V ABI.
 - [ ] User memory: `brk`/`mmap` (anonymous pages) and safe pointer validation (`copy_from_user`/`copy_to_user`) with page-fault handling.
 - [ ] Per-process file descriptor table: `open`, `close`, `read`, `write`, `dup` (backing `stdin`/`stdout`/`stderr`).
