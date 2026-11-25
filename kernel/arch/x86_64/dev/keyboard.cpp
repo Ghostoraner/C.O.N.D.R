@@ -8,7 +8,7 @@ namespace nord::arch::keyboard {
 
 static constexpr u16 DATA_PORT = 0x60;
 static constexpr u16 STATUS_PORT = 0x64;
-static constexpr u32 MAX_WAITERS = 8;
+static constexpr usize TEST_WAITER_POOL = 64;
 
 static bool g_shift = false;
 static bool g_caps_lock = false;
@@ -18,14 +18,57 @@ static u8 g_head = 0;
 static u8 g_tail = 0;
 static u64 g_dropped_events = 0;
 
-// Tasks blocked in a read. Every event wakes all of them; each one re-checks
-// focus and the queue, so each event is consumed by exactly one reader.
-static u32 g_waiters[MAX_WAITERS];
+struct Waiter {
+    u32 task_id;
+    Waiter* next;
+};
+
+// Waiters live on the blocked task's own kernel stack, so the list has no
+// fixed capacity and no heap-allocation failure path. Every event wakes all
+// waiters; each one re-checks focus and the queue, so exactly one consumes it.
+static Waiter* g_waiters;
 
 // Focus owner: 0 = kernel console (shell), otherwise a user task id.
 static u32 g_focus = 0;
 
+struct InterruptGuard {
+    InterruptGuard() {
+        asm volatile("pushfq; pop %0; cli" : "=r"(flags) :: "memory");
+    }
+    ~InterruptGuard() {
+        asm volatile("push %0; popfq" :: "r"(flags) : "memory", "cc");
+    }
+    u64 flags;
+};
+
 static char translate(u8 code, bool shifted);
+
+static void link_waiter(Waiter& waiter) {
+    waiter.next = g_waiters;
+    g_waiters = &waiter;
+}
+
+static void unlink_waiter(const Waiter& waiter) {
+    Waiter** link = &g_waiters;
+    while (*link) {
+        if (*link == &waiter) {
+            *link = waiter.next;
+            return;
+        }
+        link = &(*link)->next;
+    }
+}
+
+static void unlink_task(u32 task_id) {
+    Waiter** link = &g_waiters;
+    while (*link) {
+        if ((*link)->task_id == task_id) {
+            *link = (*link)->next;
+            continue;
+        }
+        link = &(*link)->next;
+    }
+}
 
 static bool enqueue(Event event) {
     const u8 head = __atomic_load_n(&g_head, __ATOMIC_RELAXED);
@@ -49,26 +92,8 @@ static void flush_queue() {
 }
 
 static void wake_all_waiters() {
-    for (u32 i = 0; i < MAX_WAITERS; ++i) {
-        if (g_waiters[i]) scheduler::wake(g_waiters[i]);
-    }
-}
-
-static bool add_waiter(u32 task_id) {
-    u32 free_slot = MAX_WAITERS;
-    for (u32 i = 0; i < MAX_WAITERS; ++i) {
-        if (g_waiters[i] == task_id) return true;
-        if (!g_waiters[i] && free_slot == MAX_WAITERS) free_slot = i;
-    }
-    if (free_slot == MAX_WAITERS) return false;
-    g_waiters[free_slot] = task_id;
-    return true;
-}
-
-static void remove_waiter(u32 task_id) {
-    for (u32 i = 0; i < MAX_WAITERS; ++i) {
-        if (g_waiters[i] == task_id) g_waiters[i] = 0;
-    }
+    for (Waiter* waiter = g_waiters; waiter; waiter = waiter->next)
+        scheduler::wake(waiter->task_id);
 }
 
 static bool decode(u8 scan, Event& event) {
@@ -119,6 +144,12 @@ void handle_irq(Registers*) {
     }
 }
 
+bool test_inject_event(Event event) {
+    if (!enqueue(event)) return false;
+    wake_all_waiters();
+    return true;
+}
+
 bool try_get_event(Event& event) {
     const u8 tail = __atomic_load_n(&g_tail, __ATOMIC_RELAXED);
     if (tail == __atomic_load_n(&g_head, __ATOMIC_ACQUIRE)) return false;
@@ -130,25 +161,23 @@ bool try_get_event(Event& event) {
 // Blocks `task` until an event is available to `owner`. `owner` is 0 for the
 // console or the task id of a user program holding focus.
 static Event wait_event(u32 task_id, u32 owner) {
+    Waiter waiter{task_id, nullptr};
     Event event{};
     for (;;) {
         if (g_focus == owner && try_get_event(event)) return event;
 
-        arch::cli();
-        // Check and register in one critical section: an IRQ after this point
-        // finds the task in the waiter list and wakes it, so no wakeup is lost.
-        if (g_focus == owner && queue_has_event()) {
-            arch::sti();
-            continue;
+        {
+            InterruptGuard guard;
+            // Check and register in one critical section: an IRQ after this
+            // point finds the task in the waiter list and wakes it.
+            if (g_focus == owner && queue_has_event()) continue;
+            link_waiter(waiter);
+            scheduler::block_current();   // returns with interrupts enabled
         }
-        if (!add_waiter(task_id)) {
-            // Waiter list is full: back off and retry.
-            arch::sti();
-            scheduler::yield();
-            continue;
+        {
+            InterruptGuard guard;
+            unlink_waiter(waiter);
         }
-        scheduler::block_current();   // returns with interrupts enabled
-        remove_waiter(task_id);
     }
 }
 
@@ -207,7 +236,8 @@ bool read_char_for_task(u32 task_id, char& character) {
 }
 
 void clear_waiter(u32 task_id) {
-    remove_waiter(task_id);
+    InterruptGuard guard;
+    unlink_task(task_id);
     if (g_focus == task_id) {
         g_focus = 0;
         flush_queue();
@@ -225,7 +255,7 @@ void init() {
     g_head = 0;
     g_tail = 0;
     g_dropped_events = 0;
-    for (u32 i = 0; i < MAX_WAITERS; ++i) g_waiters[i] = 0;
+    g_waiters = nullptr;
     g_focus = 0;
 }
 
@@ -288,19 +318,36 @@ u64 dropped_events() {
     return g_dropped_events;
 }
 
+static Waiter g_test_waiters[TEST_WAITER_POOL];
+static bool g_test_waiter_used[TEST_WAITER_POOL];
+
 bool test_add_waiter(u32 task_id) {
-    return add_waiter(task_id);
+    InterruptGuard guard;
+    for (usize i = 0; i < TEST_WAITER_POOL; ++i)
+        if (g_test_waiter_used[i] && g_test_waiters[i].task_id == task_id) return true;
+    for (usize i = 0; i < TEST_WAITER_POOL; ++i) {
+        if (g_test_waiter_used[i]) continue;
+        g_test_waiter_used[i] = true;
+        g_test_waiters[i] = {task_id, nullptr};
+        link_waiter(g_test_waiters[i]);
+        return true;
+    }
+    return false;
 }
 
 void test_remove_waiter(u32 task_id) {
-    remove_waiter(task_id);
+    InterruptGuard guard;
+    for (usize i = 0; i < TEST_WAITER_POOL; ++i) {
+        if (!g_test_waiter_used[i] || g_test_waiters[i].task_id != task_id) continue;
+        unlink_waiter(g_test_waiters[i]);
+        g_test_waiter_used[i] = false;
+    }
 }
 
 u64 test_waiter_count() {
+    InterruptGuard guard;
     u64 count = 0;
-    for (u32 i = 0; i < MAX_WAITERS; ++i) {
-        if (g_waiters[i]) ++count;
-    }
+    for (const Waiter* waiter = g_waiters; waiter; waiter = waiter->next) ++count;
     return count;
 }
 

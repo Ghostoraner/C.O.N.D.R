@@ -70,9 +70,11 @@ returned. A task must hold keyboard focus (syscall 9) before calling
 `read_char`; otherwise it fails immediately with `-11`. Taking focus flushes
 keys typed earlier for the console, and releasing focus wakes the console.
 
-Several tasks may wait at once: each reader registers itself in the waiter list
-before blocking, so a keypress wakes the right task and a wakeup can never be
-lost even if the interrupt arrives between the queue check and the sleep. Only
-the task that owns focus consumes events, and each event is delivered to exactly
-one reader. Events dropped because the ring buffer overflowed are counted and
-shown by the `sys` shell command.
+Several tasks may wait at once: each reader registers a waiter node on its own
+kernel stack before blocking, so the list has no fixed capacity and a keypress
+wakes every waiter losslessly, even if the interrupt arrives between the queue
+check and the sleep. Only the task that owns focus consumes events, and each
+event is delivered to exactly one reader. IPC receive waiters use the same
+stack-linked approach per endpoint, so connection queues are not limited to a
+fixed number of blocked receivers. Events dropped because the ring buffer
+overflowed are counted and shown by the `sys` shell command.

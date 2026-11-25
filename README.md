@@ -47,7 +47,7 @@ and UEFI systems.
 
 - PS/2 keyboard input and framebuffer command console
 
-- User-mode keyboard input: a single user task can take keyboard focus, read characters with a blocking syscall, and return focus to the console; several readers can wait at once
+- User-mode keyboard input: a single user task can take keyboard focus, read characters with a blocking syscall, and return focus to the console; stack-backed waiter lists let an unbounded number of readers wait at once
 
 - 32-bit `NodeId` (`u32`) architecture integrated across IPC, capability rights, and NVMFS storage handles
 
@@ -59,7 +59,7 @@ and UEFI systems.
 
 - Two-slot NVMFS snapshot mechanism with CRC persistence over block devices
 
-- Kernel-level automated unit testing framework (`kernel/test/`) covering PMM and heap boundary cases, address spaces, scheduler growth and blocking sleep, process lifecycle and reclamation, NVMFS registry growth, IPC queue saturation and blocking receive, snapshot corruption rejection, keyboard queue, waiter list and focus rules
+- Kernel-level automated unit testing framework (`kernel/test/`) covering PMM and heap boundary cases, address spaces, scheduler growth and blocking sleep, process lifecycle and reclamation, NVMFS registry growth, IPC queue saturation and blocking receive, snapshot corruption rejection, keyboard queue, scalable waiter list, full `read_char` block/wake cycle and focus rules
 
 - Freestanding command tokenizer with quoted arguments
 
@@ -223,7 +223,7 @@ x86, написанная на freestanding C++23 и NASM. Загружаетс�
 * Физический аллокатор страниц, куча ядра и управление виртуальной памятью
 * Framebuffer Limine 32 bpp со шрифтом консоли 12x22
 * Ввод с PS/2-клавиатуры и графическая командная консоль
-* Ввод с клавиатуры для user mode: одна пользовательская задача может взять фокус клавиатуры, читать символы блокирующим syscall и вернуть фокус консоли; несколько читателей могут ждать одновременно
+* Ввод с клавиатуры для user mode: одна пользовательская задача может взять фокус клавиатуры, читать символы блокирующим syscall и вернуть фокус консоли; списки ожидания на стеке задач не ограничивают число читателей
 * Архитектура 32-битных `NodeId` (`u32`), интегрированная в IPC, права возможностей и хранилище NVMFS
 
 * Динамические реестры узлов и тегов NVMFS на куче ядра вместо фиксированных таблиц
@@ -231,7 +231,7 @@ x86, написанная на freestanding C++23 и NASM. Загружаетс�
 * Спинлоки с отключением вытеснения вокруг PMM, NVMFS и состояния IPC; каждое IPC-соединение получает собственную пару endpoint'ов
 * Абстракция блочных устройств (`BlockDevice`) с регистрацией драйвера VirtIO-blk
 * Двухслотовый механизм снапшотов NVMFS с защитой CRC поверх блочного слоя
-* Модуль автоматического юнит-тестирования ядра (`kernel/test/`) для граничных случаев PMM и кучи, адресных пространств, роста планировщика и блокирующего сна, жизненного цикла и освобождения процессов, роста NVMFS, переполнения очередей IPC и блокирующего приёма, отказа от повреждённых снапшотов, очереди клавиатуры, списка ожидания и правил фокуса
+* Модуль автоматического юнит-тестирования ядра (`kernel/test/`) для граничных случаев PMM и кучи, адресных пространств, роста планировщика и блокирующего сна, жизненного цикла и освобождения процессов, роста NVMFS, переполнения очередей IPC и блокирующего приёма, отказа от повреждённых снапшотов, очереди клавиатуры, масштабируемого списка ожидания, полного цикла блокировки/пробуждения `read_char` и правил фокуса
 * Freestanding-токенизатор команд с поддержкой аргументов в кавычках
 
 ## Сборка и запуск

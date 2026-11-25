@@ -40,6 +40,7 @@ void clear_waiter(u32 task_id);
 u64 dropped_events();
 
 bool test_enqueue(Event event);
+bool test_inject_event(Event event);
 u64 test_dropped_count();
 bool test_add_waiter(u32 task_id);
 void test_remove_waiter(u32 task_id);

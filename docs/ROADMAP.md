@@ -44,7 +44,7 @@ Minimum viable **CLI-OS** is complete at **Gate 5**. Phases 6 and 7 are post-CLI
 
 **Gate 1:** `make test` passes in CI; deliberate kernel stack overflow and user-mode write to kernel memory are caught cleanly without rebooting the machine.
 
----s
+---
 
 ### Phase 2: Processes & System Calls
 *Goal: Transition from embedded kernel demos to a full process lifecycle.*

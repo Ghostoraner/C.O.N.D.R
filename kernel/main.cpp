@@ -132,6 +132,11 @@ extern "C" [[noreturn]] void kernel_main() {
 
     test_subsystems();
 
+    arch::scheduler::Config scheduler_config;
+    scheduler_config.initial_capacity = 8;
+    scheduler_config.tasks_per_slab = 8;
+    scheduler_config.stack_size = 16 * 1024;
+    arch::scheduler::configure(scheduler_config);
     arch::scheduler::init();
     u32 shell_id;
     u32 worker_id;

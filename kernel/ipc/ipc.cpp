@@ -10,12 +10,16 @@ static constexpr usize MAX_SERVICES = 8;
 static constexpr usize MAX_ENDPOINTS = 32;
 static constexpr usize MAX_CAPABILITIES = 64;
 static constexpr usize MAX_HANDLES_PER_TASK = 8;
-static constexpr usize MAX_RECEIVERS = 8;
 static constexpr usize QUEUE_DEPTH = 8;
 static constexpr usize SERVICE_NAME_SIZE = 24;
 static constexpr u8 RIGHT_ACCEPT = 1;
 static constexpr u8 RIGHT_SEND = 2;
 static constexpr u8 RIGHT_RECEIVE = 4;
+
+struct Receiver {
+    u32 task_id;
+    Receiver* next;
+};
 
 struct Endpoint {
     bool active;
@@ -31,7 +35,7 @@ struct Endpoint {
     u8 queue_head;
     u8 queue_tail;
     u8 queue_count;
-    u32 receivers[MAX_RECEIVERS];
+    Receiver* receivers;
 };
 
 struct Service {
@@ -77,28 +81,38 @@ struct IrqGuard {
     u64 flags;
 };
 
-static bool add_receiver(Endpoint& endpoint, u32 task_id) {
-    for (usize i = 0; i < MAX_RECEIVERS; ++i) {
-        if (endpoint.receivers[i] == task_id) return true;
-        if (!endpoint.receivers[i]) {
-            endpoint.receivers[i] = task_id;
-            return true;
-        }
-    }
-    return false;
+static void add_receiver(Endpoint& endpoint, Receiver& receiver) {
+    receiver.next = endpoint.receivers;
+    endpoint.receivers = &receiver;
 }
 
-static void remove_receiver(Endpoint& endpoint, u32 task_id) {
-    for (usize i = 0; i < MAX_RECEIVERS; ++i)
-        if (endpoint.receivers[i] == task_id) endpoint.receivers[i] = 0;
+static void remove_receiver(Endpoint& endpoint, const Receiver& receiver) {
+    Receiver** link = &endpoint.receivers;
+    while (*link) {
+        if (*link == &receiver) {
+            *link = receiver.next;
+            return;
+        }
+        link = &(*link)->next;
+    }
+}
+
+static void remove_task_receivers(Endpoint& endpoint, u32 task_id) {
+    Receiver** link = &endpoint.receivers;
+    while (*link) {
+        if ((*link)->task_id == task_id) {
+            *link = (*link)->next;
+            continue;
+        }
+        link = &(*link)->next;
+    }
 }
 
 static void wake_receivers(u16 endpoint_index) {
     if (!valid_endpoint(endpoint_index)) return;
     Endpoint& endpoint = g_endpoints[endpoint_index];
-    for (usize i = 0; i < MAX_RECEIVERS; ++i) {
-        if (endpoint.receivers[i]) arch::scheduler::wake(endpoint.receivers[i]);
-    }
+    for (Receiver* receiver = endpoint.receivers; receiver; receiver = receiver->next)
+        arch::scheduler::wake(receiver->task_id);
 }
 
 static Endpoint* allocate_endpoint(u32 owner, bool listener, u16& index) {
@@ -390,6 +404,7 @@ static bool receive_locked(u32 receiver, Handle connection, Message& message, Er
 }
 
 bool receive_blocking(u32 receiver, Handle connection, Message& message, Error& error) {
+    Receiver waiter{receiver, nullptr};
     for (;;) {
         u16 endpoint_index = 0;
         {
@@ -420,10 +435,7 @@ bool receive_blocking(u32 receiver, Handle connection, Message& message, Error& 
                     error = Error::not_found;
                     return false;
                 }
-                if (!add_receiver(endpoint, receiver)) {
-                    error = Error::table_full;
-                    return false;
-                }
+                add_receiver(endpoint, waiter);
                 endpoint_index = capability->endpoint;
             }
             arch::scheduler::block_current();
@@ -432,7 +444,7 @@ bool receive_blocking(u32 receiver, Handle connection, Message& message, Error& 
             IrqGuard irq;
             sync::LockGuard guard(g_lock);
             if (valid_endpoint(endpoint_index))
-                remove_receiver(g_endpoints[endpoint_index], receiver);
+                remove_receiver(g_endpoints[endpoint_index], waiter);
         }
     }
 }
@@ -440,7 +452,7 @@ bool receive_blocking(u32 receiver, Handle connection, Message& message, Error& 
 static void close_task_locked(u32 task_id) {
     for (usize i = 0; i < MAX_ENDPOINTS; ++i) {
         Endpoint& endpoint = g_endpoints[i];
-        remove_receiver(endpoint, task_id);
+        remove_task_receivers(endpoint, task_id);
         if (endpoint.active && endpoint.listener && endpoint.owner == task_id)
             pending_discard(static_cast<u16>(i));
     }

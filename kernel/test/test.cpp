@@ -651,17 +651,19 @@ static bool keyboard_waiter_list(usize) {
     using nord::arch::keyboard::test_remove_waiter;
     using nord::arch::keyboard::test_waiter_count;
 
+    // More than the old fixed eight-slot array: every waiter must be accepted.
+    constexpr u32 WAITERS = 16;
+    u32 ids[WAITERS];
+    for (u32 i = 0; i < WAITERS; ++i) ids[i] = 0xF001 + i;
+
     const u64 before = test_waiter_count();
-    const u32 a = 0xF001;
-    const u32 b = 0xF002;
+    bool ok = true;
+    for (u32 i = 0; i < WAITERS; ++i) ok = ok && test_add_waiter(ids[i]);
+    ok = ok && test_waiter_count() == before + WAITERS;
+    ok = ok && test_add_waiter(ids[0]);         // idempotent
+    ok = ok && test_waiter_count() == before + WAITERS;
 
-    bool ok = test_add_waiter(a) && test_add_waiter(b);
-    ok = ok && test_waiter_count() == before + 2;
-    ok = ok && test_add_waiter(a);              // idempotent
-    ok = ok && test_waiter_count() == before + 2;
-
-    test_remove_waiter(a);
-    test_remove_waiter(b);
+    for (u32 i = 0; i < WAITERS; ++i) test_remove_waiter(ids[i]);
     return ok && test_waiter_count() == before;
 }
 
@@ -686,6 +688,74 @@ static bool keyboard_focus_rules(usize) {
 
     if (focus_owner() == a) release_focus(a); // cleanup on failure
     return ok;
+}
+
+namespace {
+
+volatile u64 g_kbd_cycle_started;
+volatile u64 g_kbd_cycle_char;
+
+void keyboard_cycle_child() {
+    using nord::arch::scheduler::current_id;
+    using nord::arch::scheduler::exit_current;
+
+    const u32 self = current_id();
+    if (!nord::arch::keyboard::request_focus(self)) exit_current(1);
+    g_kbd_cycle_started = 1;
+
+    char character = 0;
+    if (!nord::arch::keyboard::read_char_for_task(self, character)) {
+        nord::arch::keyboard::release_focus(self);
+        exit_current(2);
+    }
+    g_kbd_cycle_char = static_cast<u8>(character);
+    nord::arch::keyboard::release_focus(self);
+    exit_current(character == 'z' ? 0 : 3);
+}
+
+} // namespace
+
+// Full read_char lifecycle: a child takes keyboard focus, blocks in
+// read_char_for_task, an injected IRQ-path event wakes it, and it consumes the
+// character before returning focus and exiting.
+static bool keyboard_read_char_blocking(usize) {
+    using nord::arch::keyboard::Event;
+    using nord::arch::keyboard::Key;
+    using nord::arch::keyboard::focus_owner;
+    using nord::arch::keyboard::test_inject_event;
+    using nord::arch::scheduler::create;
+    using nord::arch::scheduler::current_id;
+    using nord::arch::scheduler::wait;
+
+    if (current_id() == 0) return true;
+    if (focus_owner() != 0) return true;
+
+    g_kbd_cycle_started = 0;
+    g_kbd_cycle_char = 0;
+
+    u32 id = 0;
+    if (!create("kbd-cycle", &keyboard_cycle_child, id)) return false;
+    for (u64 spin = 0; spin < 200000 && !g_kbd_cycle_started; ++spin)
+        nord::arch::scheduler::yield();
+
+    bool blocked = false;
+    for (u64 spin = 0; spin < 200000 && !blocked; ++spin) {
+        for (usize i = 0; i < nord::arch::scheduler::count(); ++i) {
+            nord::arch::scheduler::TaskInfo info{};
+            if (nord::arch::scheduler::at(i, info) && info.id == id
+                && info.state == nord::arch::scheduler::State::blocked) {
+                blocked = true;
+                break;
+            }
+        }
+        if (!blocked) nord::arch::scheduler::yield();
+    }
+
+    const bool injected = test_inject_event(Event{Key::character, 'z'});
+    i32 status = -1;
+    u32 child = 0;
+    const bool reaped = wait(static_cast<i32>(id), status, child) && child == id;
+    return blocked && injected && reaped && status == 0 && g_kbd_cycle_char == 'z';
 }
 
 static bool address_space_copy_invalid(usize) {
@@ -763,6 +833,7 @@ static bool register_once = []() -> bool {
     TestSuite::register_test("keyboard_full_queue_drops", 3, &keyboard_full_queue_drops);
     TestSuite::register_test("keyboard_waiter_list", 3, &keyboard_waiter_list);
     TestSuite::register_test("keyboard_focus_rules", 3, &keyboard_focus_rules);
+    TestSuite::register_test("keyboard_read_char_blocking", 2, &keyboard_read_char_blocking);
     TestSuite::register_test("address_space_copy_invalid", 3, &address_space_copy_invalid);
     g_tests_registered = true;
     return true;
