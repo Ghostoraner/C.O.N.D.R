@@ -1,4 +1,5 @@
 #include <ipc/ipc.hpp>
+#include <arch/x86_64/cpu/scheduler.hpp>
 #include <fs/nvmfs.hpp>
 #include <lib/spinlock.hpp>
 #include <lib/string.hpp>
@@ -9,6 +10,7 @@ static constexpr usize MAX_SERVICES = 8;
 static constexpr usize MAX_ENDPOINTS = 32;
 static constexpr usize MAX_CAPABILITIES = 64;
 static constexpr usize MAX_HANDLES_PER_TASK = 8;
+static constexpr usize MAX_RECEIVERS = 8;
 static constexpr usize QUEUE_DEPTH = 8;
 static constexpr usize SERVICE_NAME_SIZE = 24;
 static constexpr u8 RIGHT_ACCEPT = 1;
@@ -29,6 +31,7 @@ struct Endpoint {
     u8 queue_head;
     u8 queue_tail;
     u8 queue_count;
+    u32 receivers[MAX_RECEIVERS];
 };
 
 struct Service {
@@ -59,6 +62,43 @@ static bool same(const char* left, const char* right) {
 
 static bool valid_endpoint(u16 index) {
     return index < MAX_ENDPOINTS && g_endpoints[index].active;
+}
+
+// Keeps interrupts off between a failed queue check, waiter registration and
+// the actual block. If an IRQ ran in that window, a sender could complete and
+// its wake would be lost because the receiver was still running.
+struct IrqGuard {
+    IrqGuard() {
+        asm volatile("pushfq; pop %0; cli" : "=r"(flags) :: "memory");
+    }
+    ~IrqGuard() {
+        asm volatile("push %0; popfq" :: "r"(flags) : "memory", "cc");
+    }
+    u64 flags;
+};
+
+static bool add_receiver(Endpoint& endpoint, u32 task_id) {
+    for (usize i = 0; i < MAX_RECEIVERS; ++i) {
+        if (endpoint.receivers[i] == task_id) return true;
+        if (!endpoint.receivers[i]) {
+            endpoint.receivers[i] = task_id;
+            return true;
+        }
+    }
+    return false;
+}
+
+static void remove_receiver(Endpoint& endpoint, u32 task_id) {
+    for (usize i = 0; i < MAX_RECEIVERS; ++i)
+        if (endpoint.receivers[i] == task_id) endpoint.receivers[i] = 0;
+}
+
+static void wake_receivers(u16 endpoint_index) {
+    if (!valid_endpoint(endpoint_index)) return;
+    Endpoint& endpoint = g_endpoints[endpoint_index];
+    for (usize i = 0; i < MAX_RECEIVERS; ++i) {
+        if (endpoint.receivers[i]) arch::scheduler::wake(endpoint.receivers[i]);
+    }
 }
 
 static Endpoint* allocate_endpoint(u32 owner, bool listener, u16& index) {
@@ -314,7 +354,8 @@ static bool send_locked(u32 sender, Handle connection, const void* bytes, usize 
     }
     if (size > sizeof(Message::bytes)) { error = Error::message_too_large; return false; }
 
-    Endpoint* peer = &g_endpoints[endpoint->peer];
+    const u16 peer_index = endpoint->peer;
+    Endpoint* peer = &g_endpoints[peer_index];
     if (peer->queue_count >= QUEUE_DEPTH) { error = Error::queue_full; return false; }
 
     usize slot = peer->queue_tail;
@@ -323,6 +364,7 @@ static bool send_locked(u32 sender, Handle connection, const void* bytes, usize 
     memcpy(peer->queue[slot].bytes, bytes, size);
     peer->queue_tail = static_cast<u8>((peer->queue_tail + 1) % QUEUE_DEPTH);
     ++peer->queue_count;
+    wake_receivers(peer_index);
 
     error = Error::none;
     return true;
@@ -347,9 +389,58 @@ static bool receive_locked(u32 receiver, Handle connection, Message& message, Er
     return true;
 }
 
+bool receive_blocking(u32 receiver, Handle connection, Message& message, Error& error) {
+    for (;;) {
+        u16 endpoint_index = 0;
+        {
+            IrqGuard irq;
+            {
+                sync::LockGuard guard(g_lock);
+                Capability* capability = find_capability(receiver, connection);
+                if (!capability || !(capability->rights & RIGHT_RECEIVE)) {
+                    error = Error::permission_denied;
+                    return false;
+                }
+                if (!valid_endpoint(capability->endpoint)) {
+                    error = Error::not_found;
+                    return false;
+                }
+                Endpoint& endpoint = g_endpoints[capability->endpoint];
+                if (endpoint.queue_count) {
+                    const usize slot = endpoint.queue_head;
+                    message = endpoint.queue[slot];
+                    endpoint.queue_head =
+                        static_cast<u8>((endpoint.queue_head + 1) % QUEUE_DEPTH);
+                    --endpoint.queue_count;
+                    error = Error::none;
+                    return true;
+                }
+                if (endpoint.peer == 0xFFFF || !valid_endpoint(endpoint.peer)) {
+                    endpoint.peer = 0xFFFF;
+                    error = Error::not_found;
+                    return false;
+                }
+                if (!add_receiver(endpoint, receiver)) {
+                    error = Error::table_full;
+                    return false;
+                }
+                endpoint_index = capability->endpoint;
+            }
+            arch::scheduler::block_current();
+        }
+        {
+            IrqGuard irq;
+            sync::LockGuard guard(g_lock);
+            if (valid_endpoint(endpoint_index))
+                remove_receiver(g_endpoints[endpoint_index], receiver);
+        }
+    }
+}
+
 static void close_task_locked(u32 task_id) {
     for (usize i = 0; i < MAX_ENDPOINTS; ++i) {
         Endpoint& endpoint = g_endpoints[i];
+        remove_receiver(endpoint, task_id);
         if (endpoint.active && endpoint.listener && endpoint.owner == task_id)
             pending_discard(static_cast<u16>(i));
     }
@@ -375,8 +466,11 @@ static void close_task_locked(u32 task_id) {
     for (usize i = 0; i < MAX_ENDPOINTS; ++i) {
         Endpoint& endpoint = g_endpoints[i];
         if (!endpoint.active || endpoint.owner != task_id) continue;
-        if (valid_endpoint(endpoint.peer) && g_endpoints[endpoint.peer].peer == i)
+        wake_receivers(static_cast<u16>(i));
+        if (valid_endpoint(endpoint.peer) && g_endpoints[endpoint.peer].peer == i) {
             g_endpoints[endpoint.peer].peer = 0xFFFF;
+            wake_receivers(endpoint.peer);
+        }
         memset(&endpoint, 0, sizeof(endpoint));
     }
 }

@@ -307,6 +307,9 @@ static void command_sys() {
     kprintf("C.O.N.D.R.  Command Operating Node Data Router\n");
     kprintf("kernel=x86_64 boot=Limine\n");
     kprintf("timer_ticks=%lu uptime=%lu s\n", arch::timer::ticks(), arch::timer::ticks() / 100);
+    kprintf("tasks=%lu table_capacity=%lu slab_capacity=%lu\n",
+            arch::scheduler::count(), arch::scheduler::capacity(),
+            arch::scheduler::slab_capacity());
     kprintf("NVMFS nodes=%lu tags=%lu streams=%lu/%lu bytes\n", nodes, tags, streams, stream_limit);
     kprintf("heap=%lu/%lu bytes\n", heap_used, heap_capacity);
     kprintf("keyboard dropped=%lu\n", arch::keyboard::dropped_events());

@@ -2,6 +2,7 @@
 #include <arch/x86_64/cpu/fpu.hpp>
 #include <arch/x86_64/cpu/gdt.hpp>
 #include <arch/x86_64/dev/keyboard.hpp>
+#include <arch/x86_64/dev/timer.hpp>
 #include <arch/x86_64/io.hpp>
 #include <ipc/ipc.hpp>
 #include <lib/string.hpp>
@@ -11,8 +12,8 @@
 
 namespace nord::arch::scheduler {
 
-static constexpr usize STACK_SIZE = 16 * 1024;
 static constexpr usize NAME_SIZE = 24;
+static constexpr usize DEFAULT_STACK_SIZE = 16 * 1024;
 
 struct Task {
     u32 id;
@@ -28,9 +29,23 @@ struct Task {
     bool user_mode;
     mm::address_space::AddressSpace space;
     u64 switches;
+    u64 wake_tick;
+    Task* free_next;
     char name[NAME_SIZE];
 };
 
+// Task records are carved out of heap-backed slabs. Freed records stay on an
+// intrusive free list, so steady-state create/exit cycles do not touch the
+// heap after the first slab is allocated.
+struct TaskSlab {
+    TaskSlab* next;
+    usize capacity;
+};
+
+static Config g_config;
+static TaskSlab* g_slabs;
+static Task* g_free_task;
+static usize g_slab_capacity;
 static Task** g_tasks;
 static usize g_task_capacity;
 static usize g_count;
@@ -40,6 +55,7 @@ static Registers* g_boot_frame;
 alignas(fpu::STATE_ALIGN) static u8 g_boot_fpu[fpu::STATE_SIZE];
 static Task* g_retired_task;
 static bool g_running;
+static bool g_initialized;
 static u32 g_preempt_depth;
 static paddr_t g_kernel_cr3;
 static u64 g_boot_rsp0;
@@ -61,9 +77,41 @@ struct InterruptGuard {
     u64 flags;
 };
 
+static Task* allocate_task_record() {
+    if (!g_free_task) {
+        const usize count = g_config.tasks_per_slab;
+        const usize offset = align_up(sizeof(TaskSlab), alignof(Task));
+        if (count > (~static_cast<usize>(0) - offset) / sizeof(Task)) return nullptr;
+        auto* slab = static_cast<TaskSlab*>(
+            mm::heap::kmalloc(offset + count * sizeof(Task)));
+        if (!slab) return nullptr;
+        slab->next = g_slabs;
+        slab->capacity = count;
+        g_slabs = slab;
+
+        auto* objects = reinterpret_cast<Task*>(reinterpret_cast<u8*>(slab) + offset);
+        Task* head = g_free_task;
+        for (usize i = 0; i < count; ++i) {
+            objects[i].free_next = head;
+            head = &objects[i];
+        }
+        g_free_task = head;
+        g_slab_capacity += count;
+    }
+    Task* task = g_free_task;
+    g_free_task = task->free_next;
+    return task;
+}
+
+static void release_task_record(Task* task) {
+    task->free_next = g_free_task;
+    g_free_task = task;
+}
+
 static bool grow_tasks(usize needed) {
     if (needed <= g_task_capacity) return true;
-    usize capacity = g_task_capacity ? g_task_capacity : 8;
+    usize capacity = g_task_capacity ? g_task_capacity : g_config.initial_capacity;
+    if (!capacity) capacity = 1;
     while (capacity < needed) {
         if (capacity > ~static_cast<usize>(0) / 2) return false;
         capacity *= 2;
@@ -89,9 +137,14 @@ static bool reserve_task_slot(usize& slot) {
 }
 
 static void free_task_table() {
-    if (!g_tasks) return;
-    for (usize i = 0; i < g_task_capacity; ++i) mm::heap::kfree(g_tasks[i]);
-    mm::heap::kfree(g_tasks);
+    g_free_task = nullptr;
+    while (g_slabs) {
+        TaskSlab* next = g_slabs->next;
+        mm::heap::kfree(g_slabs);
+        g_slabs = next;
+    }
+    g_slab_capacity = 0;
+    if (g_tasks) mm::heap::kfree(g_tasks);
     g_tasks = nullptr;
     g_task_capacity = 0;
 }
@@ -127,7 +180,7 @@ static Task* allocate_task(const char* name, u32& id) {
 
     void* stack = mm::task_stack::allocate();
     if (!stack) return nullptr;
-    auto* task = static_cast<Task*>(mm::heap::kmalloc(sizeof(Task)));
+    Task* task = allocate_task_record();
     if (!task) {
         mm::task_stack::release(stack);
         return nullptr;
@@ -210,7 +263,7 @@ static void destroy_task(Task* task) {
             break;
         }
     }
-    mm::heap::kfree(task);
+    release_task_record(task);
     --g_count;
 }
 
@@ -224,7 +277,19 @@ static void retire_retired_task() {
     if (!waitable(task)) destroy_task(task);
 }
 
+void configure(const Config& config) {
+    if (g_running || g_initialized || g_task_capacity) return;
+    g_config = config;
+    if (!g_config.initial_capacity) g_config.initial_capacity = 1;
+    if (!g_config.tasks_per_slab) g_config.tasks_per_slab = 1;
+    if (!g_config.stack_size) g_config.stack_size = DEFAULT_STACK_SIZE;
+}
+
 void init() {
+    if (!g_config.initial_capacity) g_config.initial_capacity = 8;
+    if (!g_config.tasks_per_slab) g_config.tasks_per_slab = 8;
+    if (!g_config.stack_size) g_config.stack_size = DEFAULT_STACK_SIZE;
+
     free_task_table();
     g_count = 0;
     g_next_id = 1;
@@ -236,7 +301,8 @@ void init() {
     g_preempt_depth = 0;
     g_kernel_cr3 = arch::read_cr3() & 0x000FFFFFFFFFF000ULL;
     asm volatile("mov %%rsp, %0" : "=r"(g_boot_rsp0));
-    mm::task_stack::init(STACK_SIZE);
+    mm::task_stack::init(g_config.stack_size);
+    g_initialized = true;
 }
 
 bool create(const char* name, Entry entry, u32& id) {
@@ -282,9 +348,23 @@ void preempt_enable() {
     if (g_preempt_depth) --g_preempt_depth;
 }
 
+static void wake_sleepers() {
+    const u64 now = timer::ticks();
+    for (usize i = 0; i < g_task_capacity; ++i) {
+        Task* task = g_tasks[i];
+        if (!task || !task->active || task->state != State::blocked || !task->wake_tick)
+            continue;
+        if (task->wake_tick <= now) {
+            task->wake_tick = 0;
+            task->state = State::ready;
+        }
+    }
+}
+
 Registers* schedule(Registers* frame) {
     if (!g_running || g_preempt_depth) return frame;
 
+    wake_sleepers();
     retire_retired_task();
 
     Task* previous = g_current;
@@ -338,16 +418,46 @@ void wake(u32 id) {
     for (usize i = 0; i < g_task_capacity; ++i) {
         Task* task = g_tasks[i];
         if (task && task->active && task->id == id && task->state == State::blocked) {
+            task->wake_tick = 0;
             task->state = State::ready;
             return;
         }
     }
 }
 
+// Sleep is implemented as a timer wakeup: the task blocks and the scheduler
+// scans for expired deadlines on every PIT tick.
+void sleep_ms(u64 milliseconds) {
+    if (!g_running || !g_current || !milliseconds) {
+        if (g_running) yield();
+        return;
+    }
+    const u64 frequency = timer::frequency();
+    u64 ticks = 0;
+    const u64 max_ms = frequency ? (~static_cast<u64>(0) - 999) / frequency : 0;
+    if (frequency) {
+        ticks = milliseconds > max_ms
+            ? (~static_cast<u64>(0) / frequency)
+            : (milliseconds * frequency + 999) / 1000;
+    }
+    if (!ticks) {
+        yield();
+        return;
+    }
+
+    InterruptGuard guard;
+    const u64 now = timer::ticks();
+    const u64 deadline = now + ticks;
+    g_current->wake_tick = deadline < now ? ~static_cast<u64>(0) : deadline;
+    g_current->state = State::blocked;
+    isr_yield();
+}
+
 static void become_zombie(i32 status) {
     if (!g_current) return;
     keyboard::clear_waiter(g_current->id);
     g_current->status = status;
+    g_current->wake_tick = 0;
     g_current->state = State::zombie;
     if (g_current->parent) wake(g_current->parent);
 }
@@ -411,6 +521,14 @@ bool wait(i32 pid, i32& status, u32& child_id) {
 
 usize count() {
     return g_count;
+}
+
+usize capacity() {
+    return g_task_capacity;
+}
+
+usize slab_capacity() {
+    return g_slab_capacity;
 }
 
 u32 current_id() {

@@ -30,6 +30,7 @@ bool connect(u32 client, const char* name, Handle& handle, Error& error);
 bool accept(u32 owner, Handle listener, Handle& connection, Error& error);
 bool send(u32 sender, Handle connection, const void* bytes, usize size, Error& error);
 bool receive(u32 receiver, Handle connection, Message& message, Error& error);
+bool receive_blocking(u32 receiver, Handle connection, Message& message, Error& error);
 void close_task(u32 task_id);
 bool selftest(u32& checks, Error& error);
 const char* error_text(Error error);

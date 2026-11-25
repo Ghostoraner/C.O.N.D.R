@@ -29,9 +29,11 @@ and UEFI systems.
 
 - Remapped 8259 PIC, 100 Hz PIT ticks and interrupt-driven PS/2 input queue
 
-- Timer-preemptive single-CPU kernel task scheduler with independent stacks (`nord::arch::scheduler`); the task table and task-stack slots grow on demand
+- Timer-preemptive single-CPU kernel task scheduler with independent stacks (`nord::arch::scheduler`); the task index grows on demand and task records come from a configurable slab cache
 
 - Process lifecycle with `ready`/`running`/`blocked`/`zombie` states, `exit(status)` and `wait`, plus full address-space, page and kernel-stack reclamation
+
+- Blocking `ipc_receive`, `read_char` and `sleep_ms`: tasks park in `blocked` and wake on IPC traffic, keyboard IRQs or PIT deadlines instead of busy-waiting
 
 - Ring 3 user tasks with per-process address spaces and an ELF64 loader
 
@@ -57,7 +59,7 @@ and UEFI systems.
 
 - Two-slot NVMFS snapshot mechanism with CRC persistence over block devices
 
-- Kernel-level automated unit testing framework (`kernel/test/`) covering PMM and heap boundary cases, address spaces, scheduler growth, process lifecycle and reclamation, NVMFS registry growth, IPC queue saturation, snapshot corruption rejection, keyboard queue, waiter list and focus rules
+- Kernel-level automated unit testing framework (`kernel/test/`) covering PMM and heap boundary cases, address spaces, scheduler growth and blocking sleep, process lifecycle and reclamation, NVMFS registry growth, IPC queue saturation and blocking receive, snapshot corruption rejection, keyboard queue, waiter list and focus rules
 
 - Freestanding command tokenizer with quoted arguments
 
@@ -149,17 +151,19 @@ User programs enter the kernel with `int 0x80`. The number goes in `RAX`.
 | 4 | `service_connect` | Connect to a named IPC service |
 | 5 | `service_accept` | Accept an incoming connection |
 | 6 | `ipc_send` | Send a message on a handle |
-| 7 | `ipc_receive` | Receive a message on a handle |
+| 7 | `ipc_receive` | Block until a message arrives on a handle |
 | 8 | `read_char` | Block until one character arrives; requires keyboard focus |
 | 9 | `kbd_focus` | `RDI != 0` takes keyboard focus, `RDI == 0` returns it to the console |
 | 10 | `wait` | Wait for a child (`RDI` pid, `<= 0` for any) and collect its status |
+| 11 | `sleep_ms` | Sleep for `RDI` milliseconds, waking on a PIT tick |
 
 `exit` leaves a zombie record until the parent calls `wait`, which reclaims the
 child's address space, pages, kernel stack and task record. Tasks with no living
 parent are reclaimed automatically. `read_char` returns `1` on success, `-1` for
 an invalid buffer and `-11` when the caller does not hold focus. While a user
 task holds focus, console input is suspended. Focus is released automatically
-when the task exits.
+when the task exits. `ipc_receive` and `sleep_ms` block until a message arrives
+or a PIT deadline expires; no syscall busy-waits for its wakeup.
 
 The `kbd-demo` program (`user/kbd_demo.asm`) shows the flow: it takes focus,
 reads five characters, echoes them, and returns focus to the console. It is not
@@ -209,8 +213,10 @@ x86, написанная на freestanding C++23 и NASM. Загружаетс�
 
 * Загрузка Limine, точка входа x86_64, GDT, IDT и обработчики прерываний
 * Переназначенный PIC 8259, тики PIT 100 Гц и очередь ввода PS/2 через IRQ
-* Однопроцессорный планировщик задач ядра с вытеснением по таймеру и отдельными стеками (`nord::arch::scheduler`); таблица задач и слоты стеков растут динамически
+* Однопроцессорный планировщик задач ядра с вытеснением по таймеру и отдельными стеками (`nord::arch::scheduler`); индекс задач растёт динамически, а записи задач берутся из настраиваемого slab-кэша
 * Жизненный цикл процесса с состояниями `ready`/`running`/`blocked`/`zombie`, `exit(status)` и `wait`, а также полное освобождение адресного пространства, страниц и стека ядра
+
+* Блокирующие `ipc_receive`, `read_char` и `sleep_ms`: задачи переходят в `blocked` и просыпаются по IPC, IRQ клавиатуры или дедлайну PIT без busy-wait
 * Пользовательские задачи Ring 3 с собственными адресными пространствами и загрузчиком ELF64
 * NX-защита страниц данных и стека, guard-страницы под стеками задач ядра и пользователя
 * Стабильные отчёты об исключениях: дамп регистров, стек вызовов по frame pointer и имена функций из таблицы символов ELF
@@ -225,7 +231,7 @@ x86, написанная на freestanding C++23 и NASM. Загружаетс�
 * Спинлоки с отключением вытеснения вокруг PMM, NVMFS и состояния IPC; каждое IPC-соединение получает собственную пару endpoint'ов
 * Абстракция блочных устройств (`BlockDevice`) с регистрацией драйвера VirtIO-blk
 * Двухслотовый механизм снапшотов NVMFS с защитой CRC поверх блочного слоя
-* Модуль автоматического юнит-тестирования ядра (`kernel/test/`) для граничных случаев PMM и кучи, адресных пространств, роста планировщика и NVMFS, жизненного цикла и освобождения процессов, переполнения очередей IPC, отказа от повреждённых снапшотов, очереди клавиатуры, списка ожидания и правил фокуса
+* Модуль автоматического юнит-тестирования ядра (`kernel/test/`) для граничных случаев PMM и кучи, адресных пространств, роста планировщика и блокирующего сна, жизненного цикла и освобождения процессов, роста NVMFS, переполнения очередей IPC и блокирующего приёма, отказа от повреждённых снапшотов, очереди клавиатуры, списка ожидания и правил фокуса
 * Freestanding-токенизатор команд с поддержкой аргументов в кавычках
 
 ## Сборка и запуск
@@ -315,17 +321,19 @@ User-программы входят в ядро через `int 0x80`. Номе
 | 4 | `service_connect` | Подключиться к IPC-сервису по имени |
 | 5 | `service_accept` | Принять входящее подключение |
 | 6 | `ipc_send` | Отправить сообщение по дескриптору |
-| 7 | `ipc_receive` | Получить сообщение по дескриптору |
+| 7 | `ipc_receive` | Ждать сообщение по дескриптору |
 | 8 | `read_char` | Ждать один символ; требует фокуса клавиатуры |
 | 9 | `kbd_focus` | `RDI != 0` берёт фокус клавиатуры, `RDI == 0` возвращает его консоли |
 | 10 | `wait` | Ждать дочернюю задачу (`RDI` pid, `<= 0` — любую) и получить статус |
+| 11 | `sleep_ms` | Спать `RDI` миллисекунд, просыпаясь по тику PIT |
 
 `exit` оставляет zombie-запись, пока родитель не вызовет `wait`; тот освобождает
 адресное пространство, страницы, стек ядра и запись задачи. Задачи без живого
 родителя освобождаются автоматически. `read_char` возвращает `1` при успехе,
 `-1` при неверном буфере и `-11`, если вызывающая задача не владеет фокусом.
 Пока user-задача держит фокус, ввод в консоль приостановлен. Фокус снимается
-автоматически при завершении задачи.
+автоматически при завершении задачи. `ipc_receive` и `sleep_ms` блокируют
+задачу до прихода сообщения или тика PIT соответственно.
 
 Программа `kbd-demo` (`user/kbd_demo.asm`) показывает весь сценарий: берёт
 фокус, читает пять символов, повторяет их и возвращает фокус консоли. Она не

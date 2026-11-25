@@ -4,6 +4,7 @@
 namespace nord::arch::timer {
 
 void init(u32 frequency_hz = 100);
+u32 frequency();
 u64 ticks();
 
 }

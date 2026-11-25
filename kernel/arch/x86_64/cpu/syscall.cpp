@@ -18,6 +18,7 @@ static constexpr u64 SYS_IPC_RECEIVE = 7;
 static constexpr u64 SYS_READ_CHAR = 8;
 static constexpr u64 SYS_KBD_FOCUS = 9;
 static constexpr u64 SYS_WAIT = 10;
+static constexpr u64 SYS_SLEEP_MS = 11;
 static constexpr usize MAX_WRITE_SIZE = 256;
 static constexpr usize MAX_READ_CHAR_SIZE = 256;
 static constexpr usize MAX_SERVICE_NAME = 24;
@@ -71,6 +72,11 @@ void dispatch(Registers* registers) {
             return;
         }
         registers->rax = child_id;
+        return;
+    }
+    if (registers->rax == SYS_SLEEP_MS) {
+        scheduler::sleep_ms(registers->rdi);
+        registers->rax = 0;
         return;
     }
     if (registers->rax == SYS_SERVICE_REGISTER || registers->rax == SYS_SERVICE_CONNECT) {
@@ -128,7 +134,8 @@ void dispatch(Registers* registers) {
         }
         ipc::Message message{};
         ipc::Error error;
-        if (!ipc::receive(scheduler::current_id(), registers->rdi, message, error)) {
+        if (!ipc::receive_blocking(scheduler::current_id(), registers->rdi,
+                                   message, error)) {
             registers->rax = static_cast<u64>(-11);
             return;
         }

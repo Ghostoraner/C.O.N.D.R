@@ -1,5 +1,6 @@
 #include <test/test.hpp>
 #include <arch/x86_64/dev/keyboard.hpp>
+#include <arch/x86_64/dev/timer.hpp>
 #include <arch/x86_64/cpu/scheduler.hpp>
 #include <fs/nvmfs.hpp>
 #include <ipc/ipc.hpp>
@@ -239,6 +240,8 @@ static bool scheduler_many_tasks(usize) {
     }
 
     bool ok = created == MANY_TASK_COUNT;
+    ok = ok && nord::arch::scheduler::capacity() >= created;
+    ok = ok && nord::arch::scheduler::slab_capacity() >= created;
     for (u64 spin = 0; spin < 1000000 && g_many_task_done < created; ++spin) yield();
     ok = ok && g_many_task_done == created;
 
@@ -295,6 +298,158 @@ static bool process_lifecycle(usize) {
     if (!lifecycle_cycle(after_second)) return false;
     if (count() != tasks_before) return false;
     return baseline == after_first && after_first == after_second;
+}
+
+namespace {
+
+constexpr u64 SLEEP_TEST_MS = 30;
+volatile u64 g_sleep_start_tick;
+volatile u64 g_sleep_wake_tick;
+
+void sleep_test_task() {
+    g_sleep_start_tick = nord::arch::timer::ticks();
+    nord::arch::scheduler::sleep_ms(SLEEP_TEST_MS);
+    g_sleep_wake_tick = nord::arch::timer::ticks();
+    nord::arch::scheduler::exit_current(0);
+}
+
+} // namespace
+
+// A child blocks in sleep_ms and must be woken by a later PIT tick rather than
+// spinning. The parent sleeps past the deadline, then verifies both the
+// observed tick gap and the child's collected exit status.
+static bool scheduler_sleep_wake(usize) {
+    using nord::arch::scheduler::create;
+    using nord::arch::scheduler::current_id;
+    using nord::arch::scheduler::sleep_ms;
+    using nord::arch::scheduler::wait;
+
+    if (current_id() == 0) return true;
+    g_sleep_start_tick = 0;
+    g_sleep_wake_tick = 0;
+
+    u32 id = 0;
+    if (!create("sleep-test", &sleep_test_task, id)) return false;
+    sleep_ms(SLEEP_TEST_MS * 2 + 40);
+
+    const u64 frequency = nord::arch::timer::frequency();
+    const u64 minimum = frequency ? (SLEEP_TEST_MS * frequency) / 1000 : 1;
+    bool ok = g_sleep_start_tick != 0
+        && g_sleep_wake_tick >= g_sleep_start_tick + minimum;
+
+    i32 status = -1;
+    u32 child = 0;
+    if (!wait(static_cast<i32>(id), status, child) || child != id || status != 0) ok = false;
+    return ok;
+}
+
+namespace {
+
+constexpr char IPC_BLOCK_SERVICE[] = "ipc-block-test";
+constexpr u64 IPC_BLOCK_CLIENT_MS = 60;
+volatile u64 g_ipc_block_ready;
+volatile u64 g_ipc_block_go;
+volatile u64 g_ipc_block_start_tick;
+volatile u64 g_ipc_block_wake_tick;
+
+void ipc_block_client() {
+    using nord::arch::scheduler::current_id;
+    using nord::arch::scheduler::exit_current;
+    using nord::arch::scheduler::sleep_ms;
+    using nord::arch::scheduler::yield;
+
+    ipc::Handle handle = 0;
+    ipc::Error error;
+    bool connected = false;
+    for (u64 spin = 0; spin < 200000 && !connected; ++spin) {
+        connected = ipc::connect(current_id(), IPC_BLOCK_SERVICE, handle, error);
+        if (!connected) yield();
+    }
+    if (!connected) exit_current(1);
+
+    g_ipc_block_ready = 1;
+    for (u64 spin = 0; spin < 200000 && !g_ipc_block_go; ++spin) yield();
+    if (!g_ipc_block_go) exit_current(2);
+
+    sleep_ms(IPC_BLOCK_CLIENT_MS);
+    if (!ipc::send(current_id(), handle, "ping", 4, error)) exit_current(3);
+    exit_current(0);
+}
+
+void ipc_block_server() {
+    using nord::arch::scheduler::create;
+    using nord::arch::scheduler::current_id;
+    using nord::arch::scheduler::exit_current;
+    using nord::arch::scheduler::wait;
+    using nord::arch::scheduler::yield;
+
+    const u32 self = current_id();
+    nvmfs::NodeId node_id = 0;
+    nvmfs::Error fs_error;
+    if (!nvmfs::create(nvmfs::NodeType::service, IPC_BLOCK_SERVICE, 0, node_id, fs_error))
+        exit_current(1);
+
+    ipc::Handle listener = 0;
+    ipc::Error error;
+    if (!ipc::register_service(self, IPC_BLOCK_SERVICE, node_id, listener, error)) {
+        nvmfs::erase(node_id, fs_error);
+        exit_current(2);
+    }
+
+    g_ipc_block_ready = 0;
+    g_ipc_block_go = 0;
+    g_ipc_block_start_tick = 0;
+    g_ipc_block_wake_tick = 0;
+
+    u32 client_id = 0;
+    if (!create("ipc-block-client", &ipc_block_client, client_id)) exit_current(3);
+
+    for (u64 spin = 0; spin < 200000 && !g_ipc_block_ready; ++spin) yield();
+    if (!g_ipc_block_ready) exit_current(4);
+
+    ipc::Handle connection = 0;
+    bool accepted = false;
+    for (u64 spin = 0; spin < 200000 && !accepted; ++spin) {
+        accepted = ipc::accept(self, listener, connection, error);
+        if (!accepted) yield();
+    }
+    if (!accepted) exit_current(5);
+
+    g_ipc_block_go = 1;
+    g_ipc_block_start_tick = nord::arch::timer::ticks();
+    ipc::Message message{};
+    if (!ipc::receive_blocking(self, connection, message, error)) exit_current(6);
+    g_ipc_block_wake_tick = nord::arch::timer::ticks();
+
+    const u64 frequency = nord::arch::timer::frequency();
+    const u64 minimum = frequency ? (2 * frequency) / 1000 + 1 : 1;
+    bool ok = message.size == 4 && memcmp(message.bytes, "ping", 4) == 0
+        && g_ipc_block_wake_tick >= g_ipc_block_start_tick + minimum;
+
+    i32 status = -1;
+    u32 child = 0;
+    if (!wait(static_cast<i32>(client_id), status, child)
+        || child != client_id || status != 0) ok = false;
+    exit_current(ok ? 0 : 7);
+}
+
+} // namespace
+
+// The server registers a service and blocks in ipc_receive; a client wakes it
+// by sending a message after sleeping, so the receiver must have transitioned
+// to blocked and then been made ready by the IPC send path.
+static bool ipc_blocking_receive(usize) {
+    using nord::arch::scheduler::create;
+    using nord::arch::scheduler::current_id;
+    using nord::arch::scheduler::wait;
+
+    if (current_id() == 0) return true;
+    u32 id = 0;
+    if (!create("ipc-block-server", &ipc_block_server, id)) return false;
+    i32 status = -1;
+    u32 child = 0;
+    if (!wait(static_cast<i32>(id), status, child) || child != id) return false;
+    return status == 0;
 }
 
 static bool nvmfs_node_capacity(usize) {
@@ -599,6 +754,8 @@ static bool register_once = []() -> bool {
     TestSuite::register_test("scheduler_switch_count", 5, &scheduler_switch_count);
     TestSuite::register_test("scheduler_many_tasks", 1, &scheduler_many_tasks);
     TestSuite::register_test("process_lifecycle", 2, &process_lifecycle);
+    TestSuite::register_test("scheduler_sleep_wake", 2, &scheduler_sleep_wake);
+    TestSuite::register_test("ipc_blocking_receive", 1, &ipc_blocking_receive);
     TestSuite::register_test("nvmfs_node_capacity", 1, &nvmfs_node_capacity);
     TestSuite::register_test("memory_task_stack_guard", 3, &memory_task_stack_guard);
     TestSuite::register_test("fpu_xmm_context_switch", 1, &fpu_xmm_context_switch);

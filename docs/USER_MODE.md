@@ -28,10 +28,11 @@ User programs invoke `int 0x80` with the syscall number in `RAX`:
 | `4` | `service_connect` | `RDI` name, `RSI` length | send/receive handle |
 | `5` | `service_accept` | `RDI` listener handle | connected endpoint handle, or `-11` |
 | `6` | `ipc_send` | `RDI` handle, `RSI` data, `RDX` length (0-64) | bytes sent, or negative error |
-| `7` | `ipc_receive` | `RDI` handle, `RSI` output buffer, `RDX` capacity (at least 64) | message length, or `-11` |
+| `7` | `ipc_receive` | `RDI` handle, `RSI` output buffer, `RDX` capacity (at least 64) | message length, or `-11` on an invalid handle |
 | `8` | `read_char` | `RDI` user buffer pointer, `RSI` capacity (1-256) | `1` byte written, `-1` invalid pointer/capacity, `-11` caller lacks keyboard focus |
 | `9` | `kbd_focus` | `RDI != 0` takes focus, `RDI == 0` returns it to the console | `0`, or `-11` if the request was rejected |
 | `10` | `wait` | `RDI` child pid (`<= 0` waits for any child), `RSI` user `i32` status output | child pid, `-1` invalid status pointer, `-10` no matching child |
+| `11` | `sleep_ms` | `RDI` milliseconds | `0` after the timer wakeup |
 
 ## Process lifecycle
 
@@ -41,6 +42,13 @@ records the status and leaves a zombie record so the parent can collect it.
 the user buffer, then reclaims the child's PML4, user pages, kernel stack and
 task record. Tasks whose parent is gone are reclaimed automatically at the next
 scheduling round. `ps` shows `parent=` and, for zombies, `status=`.
+
+Blocking syscalls park the caller instead of spinning. `ipc_receive` registers
+the task on the endpoint queue and is woken by a matching `ipc_send`;
+`read_char` is woken by IRQ1; and `sleep_ms` is woken when the PIT advances past
+its deadline. The scheduler keeps its dynamic task index separate from a
+configurable slab cache for task records (`scheduler::configure` before
+`scheduler::init`), so task creation/exit cycles reuse slab objects.
 
 The kernel validates user ranges by walking the current address space before
 copying data. Service names are indexed in NVMFS, while IPC handles are bound to

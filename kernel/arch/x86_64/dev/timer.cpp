@@ -8,6 +8,7 @@ static constexpr u16 PIT_CHANNEL_0 = 0x40;
 static constexpr u16 PIT_COMMAND = 0x43;
 static constexpr u32 PIT_INPUT_HZ = 1193182;
 static u64 g_ticks;
+static u32 g_frequency = 100;
 
 static void on_tick(Registers*) {
     __atomic_add_fetch(&g_ticks, 1, __ATOMIC_RELAXED);
@@ -18,11 +19,16 @@ void init(u32 frequency_hz) {
     u32 divisor = PIT_INPUT_HZ / frequency_hz;
     if (divisor == 0) divisor = 1;
     if (divisor > 0xFFFF) divisor = 0xFFFF;
+    g_frequency = frequency_hz;
 
     idt::set_handler(0x20, on_tick);
     outb(PIT_COMMAND, 0x36);
     outb(PIT_CHANNEL_0, static_cast<u8>(divisor & 0xFF));
     outb(PIT_CHANNEL_0, static_cast<u8>((divisor >> 8) & 0xFF));
+}
+
+u32 frequency() {
+    return __atomic_load_n(&g_frequency, __ATOMIC_RELAXED);
 }
 
 u64 ticks() {
