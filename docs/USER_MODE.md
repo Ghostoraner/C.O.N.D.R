@@ -1,9 +1,12 @@
 # User Mode
 
-C.O.N.D.R. can enter Ring 3 and run one freestanding ELF64 demo in a separate
-address space. The kernel clones Limine's PML4 root, selects an unused lower-half
-PML4 slot for private user pages, and retains shared kernel mappings as
-supervisor-only. The TSS supplies each task's kernel stack on privilege change.
+C.O.N.D.R. can enter Ring 3 and run freestanding ELF64 programs in separate
+address spaces. The kernel clones Limine's PML4 root, selects an unused
+lower-half PML4 slot for private user pages, and retains shared kernel mappings
+as supervisor-only. The TSS supplies each task's kernel stack on privilege
+change. Programs can be started from a NVMFS file with `spawn`, which builds a
+System V AMD64 initial stack containing `argc`, `argv`, `envp` and an auxiliary
+vector.
 
 ## Demo program
 
@@ -33,6 +36,30 @@ User programs invoke `int 0x80` with the syscall number in `RAX`:
 | `9` | `kbd_focus` | `RDI != 0` takes focus, `RDI == 0` returns it to the console | `0`, or `-11` if the request was rejected |
 | `10` | `wait` | `RDI` child pid (`<= 0` waits for any child), `RSI` user `i32` status output | child pid, `-1` invalid status pointer, `-10` no matching child |
 | `11` | `sleep_ms` | `RDI` milliseconds | `0` after the timer wakeup |
+| `12` | `spawn` | `RDI` path, `RSI` argv, `RDX` envp (NULL-terminated user arrays) | child pid, or `-1` |
+
+## Spawning programs
+
+`spawn` loads an ELF64 image from a NVMFS file and starts it as a child of the
+caller. NVMFS is a flat namespace, so `path` is a node name; a leading `/` is
+ignored. `argv` and `envp` are NULL-terminated arrays of user pointers; either
+may be null for an empty vector. The kernel validates and copies every string,
+maps the ELF segments into a fresh address space, and builds the System V AMD64
+initial stack:
+
+```
+%rsp -> argc
+        argv[0] ... argv[argc-1], NULL
+        envp[0] ... envp[envc-1], NULL
+        auxv pairs (AT_PAGESZ, AT_ENTRY, AT_EXECFN, ..., AT_NULL)
+        argument and environment strings
+```
+
+`%rsp` is 16-byte aligned on entry. The returned pid can be collected with
+`wait`. The kernel embeds a small `args` program and installs it into NVMFS at
+boot; `spawn args alpha beta` prints the argument and environment strings and
+exits with `argc` as its status. The console command `spawn PATH [ARGS...]`
+waits for the child and prints its exit status.
 
 ## Process lifecycle
 
@@ -57,8 +84,8 @@ own client endpoint, and each `service_accept` creates a matching server
 endpoint, so every connection has a private pair of bounded eight-message
 queues. Multiple clients can therefore talk to one service without sharing a
 channel. The demo connects to its own `echo` service to exercise the
-request/reply path. There are no file or memory-management syscalls. Page-table
-mappings currently do not enforce NX, and this code is not a security boundary
+request/reply path. There are no file, pathname, or memory-management syscalls;
+`spawn` accepts a flat NVMFS node name. This code is not a security boundary
 suitable for untrusted software.
 
 ## Keyboard input

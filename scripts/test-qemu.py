@@ -128,6 +128,18 @@ def main():
             wait_for_log(process, log, "C.O.N.D.R user-mode IPC: pong")
             wait_for_log(process, log, "condr:/# ")
 
+            # Storage-backed spawn coverage: load the built-in args ELF from
+            # NVMFS and verify that argv/envp were copied onto the System V
+            # stack. The program exits with argc, which the shell collects with
+            # wait().
+            send_line(monitor, "spawn args alpha beta")
+            spawn_log = wait_for_log(process, log, "exit status=3")
+            if "spawn: pid=" not in spawn_log:
+                raise RuntimeError(f"spawn did not report the child pid\n{spawn_log}")
+            for expected in ("alpha", "beta", "PATH=/"):
+                if expected not in spawn_log:
+                    raise RuntimeError(f"spawn lost initial-stack entry {expected!r}\n{spawn_log}")
+
             # Syscall 8 coverage: launch the keyboard demo on demand. It takes
             # focus, reads five characters one at a time and echoes them back.
             send_line(monitor, "kbd-demo")

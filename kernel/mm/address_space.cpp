@@ -13,6 +13,7 @@ static constexpr u64 PAGE_LARGE = 0x80;
 static constexpr u64 PAGE_NX = 1ULL << 63;
 static constexpr u64 PAGE_ADDRESS_MASK = 0x000FFFFFFFFFF000ULL;
 static constexpr usize PAGE_SIZE = 4096;
+static paddr_t g_kernel_root;
 static u64* table(paddr_t physical) {
     return pmm::phys_to_virt<u64>(physical);
 }
@@ -54,7 +55,8 @@ bool create(AddressSpace& space) {
     space.user_base = 0;
     space.user_limit = 0;
     space.pml4_index = 0;
-    const paddr_t kernel_root = arch::read_cr3() & PAGE_ADDRESS_MASK;
+    const paddr_t kernel_root = g_kernel_root
+        ? g_kernel_root : (arch::read_cr3() & PAGE_ADDRESS_MASK);
     if (!kernel_root) return false;
     const u64* source = table(kernel_root);
     usize free_slot = 1;
@@ -69,6 +71,10 @@ bool create(AddressSpace& space) {
     space.user_base = static_cast<vaddr_t>(free_slot) * USER_SLOT_SIZE;
     space.user_limit = space.user_base + USER_SLOT_SIZE;
     return true;
+}
+
+void set_kernel_root(paddr_t root) {
+    g_kernel_root = root & PAGE_ADDRESS_MASK;
 }
 
 void destroy(AddressSpace& space) {

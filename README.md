@@ -37,6 +37,8 @@ and UEFI systems.
 
 - Ring 3 user tasks with per-process address spaces and an ELF64 loader
 
+- NVMFS-backed `spawn(path, argv, envp)`: loads an ELF64 file from storage and builds a System V AMD64 initial stack with argv, envp and an auxiliary vector
+
 - NX page protections for user data/stack pages, plus guard pages below kernel and user task stacks
 
 - Stable exception reports with register dumps, frame-pointer call stacks, and ELF symbol lookup
@@ -96,6 +98,10 @@ objects, but there are no POSIX paths.
 
 Persistence is handled via a two-slot snapshot mechanism with CRC validation utilizing the abstract `BlockDevice` layer (backed by VirtIO-blk).
 
+At boot the kernel installs a small `args` ELF program into NVMFS, so
+`spawn args alpha beta` exercises the storage-backed ELF loader and the System V
+initial stack.
+
 ## Console
 
 The guest uses short, object-oriented commands rather than POSIX commands:
@@ -114,6 +120,7 @@ The guest uses short, object-oriented commands rather than POSIX commands:
 | `put ID "TEXT"`, `add ID "TEXT"`, `get ID` | Replace, append or read a stream |
 | `sync` | Write the current NVMFS snapshot to disk |
 | `kbd-demo` | Launch the keyboard reader demo on demand |
+| `spawn PATH [ARGS...]` | Load an ELF file from NVMFS, run it with arguments and wait for its status |
 | `test` | Run automated kernel unit test suite |
 | `memtest` | Execute memory and heap subsystem checks |
 | `storagetest` | Test block device storage and snapshots |
@@ -156,6 +163,7 @@ User programs enter the kernel with `int 0x80`. The number goes in `RAX`.
 | 9 | `kbd_focus` | `RDI != 0` takes keyboard focus, `RDI == 0` returns it to the console |
 | 10 | `wait` | Wait for a child (`RDI` pid, `<= 0` for any) and collect its status |
 | 11 | `sleep_ms` | Sleep for `RDI` milliseconds, waking on a PIT tick |
+| 12 | `spawn` | Load an ELF file from NVMFS (`RDI` path, `RSI` argv, `RDX` envp) and return the child pid |
 
 `exit` leaves a zombie record until the parent calls `wait`, which reclaims the
 child's address space, pages, kernel stack and task record. Tasks with no living
@@ -164,6 +172,10 @@ an invalid buffer and `-11` when the caller does not hold focus. While a user
 task holds focus, console input is suspended. Focus is released automatically
 when the task exits. `ipc_receive` and `sleep_ms` block until a message arrives
 or a PIT deadline expires; no syscall busy-waits for its wakeup.
+
+`spawn` loads an ELF64 file from a flat NVMFS name and returns the child pid.
+The kernel builds the System V AMD64 initial stack (`argc`, `argv`, `envp`, and
+an auxv ending in `AT_NULL`) before entering Ring 3.
 
 The `kbd-demo` program (`user/kbd_demo.asm`) shows the flow: it takes focus,
 reads five characters, echoes them, and returns focus to the console. It is not
@@ -218,6 +230,7 @@ x86, написанная на freestanding C++23 и NASM. Загружаетс�
 
 * Блокирующие `ipc_receive`, `read_char` и `sleep_ms`: задачи переходят в `blocked` и просыпаются по IPC, IRQ клавиатуры или дедлайну PIT без busy-wait
 * Пользовательские задачи Ring 3 с собственными адресными пространствами и загрузчиком ELF64
+* Поддержка `spawn(path, argv, envp)`: загрузка ELF64 из NVMFS и построение начального стека System V AMD64 с argv, envp и auxiliary vector
 * NX-защита страниц данных и стека, guard-страницы под стеками задач ядра и пользователя
 * Стабильные отчёты об исключениях: дамп регистров, стек вызовов по frame pointer и имена функций из таблицы символов ELF
 * Физический аллокатор страниц, куча ядра и управление виртуальной памятью
@@ -265,6 +278,9 @@ NVMFS расшифровывается как **Node Vector Memory File System**
 
 Персистентность обеспечивается двухслотовым механизмом снапшотов с проверкой CRC через абстракцию `BlockDevice` (на базе VirtIO-blk).
 
+При загрузке ядро устанавливает в NVMFS небольшую ELF-программу `args`, поэтому
+`spawn args alpha beta` проверяет загрузчик из хранилища и начальный стек System V.
+
 ## Командная консоль
 
 Используются короткие объектные команды, а не POSIX-команды:
@@ -283,6 +299,7 @@ NVMFS расшифровывается как **Node Vector Memory File System**
 | `put ID "TEXT"`, `add ID "TEXT"`, `get ID` | Заменить, дописать или прочитать поток |
 | `sync` | Записать текущий снапшот NVMFS на диск |
 | `kbd-demo` | Запустить демонстрацию чтения клавиатуры по требованию |
+| `spawn PATH [ARGS...]` | Загрузить ELF из NVMFS, запустить с аргументами и дождаться статуса |
 | `test` | Запустить набор автоматических юнит-тестов ядра |
 | `memtest` | Выполнить проверки подсистемы памяти и кучи |
 | `storagetest` | Проверить блочное хранилище и снапшоты |
@@ -326,6 +343,7 @@ User-программы входят в ядро через `int 0x80`. Номе
 | 9 | `kbd_focus` | `RDI != 0` берёт фокус клавиатуры, `RDI == 0` возвращает его консоли |
 | 10 | `wait` | Ждать дочернюю задачу (`RDI` pid, `<= 0` — любую) и получить статус |
 | 11 | `sleep_ms` | Спать `RDI` миллисекунд, просыпаясь по тику PIT |
+| 12 | `spawn` | Загрузить ELF из NVMFS (`RDI` путь, `RSI` argv, `RDX` envp) и вернуть pid ребёнка |
 
 `exit` оставляет zombie-запись, пока родитель не вызовет `wait`; тот освобождает
 адресное пространство, страницы, стек ядра и запись задачи. Задачи без живого
@@ -334,6 +352,10 @@ User-программы входят в ядро через `int 0x80`. Номе
 Пока user-задача держит фокус, ввод в консоль приостановлен. Фокус снимается
 автоматически при завершении задачи. `ipc_receive` и `sleep_ms` блокируют
 задачу до прихода сообщения или тика PIT соответственно.
+
+`spawn` загружает ELF64 из плоского имени NVMFS и возвращает pid ребёнка. Ядро
+строит начальный стек System V AMD64 (`argc`, `argv`, `envp` и auxv с
+терминатором `AT_NULL`) перед переходом в Ring 3.
 
 Программа `kbd-demo` (`user/kbd_demo.asm`) показывает весь сценарий: берёт
 фокус, читает пять символов, повторяет их и возвращает фокус консоли. Она не

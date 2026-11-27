@@ -5,6 +5,8 @@
 #include <ipc/ipc.hpp>
 #include <lib/print.hpp>
 #include <mm/address_space.hpp>
+#include <mm/heap.hpp>
+#include <process/process.hpp>
 
 namespace nord::arch::syscall {
 
@@ -19,9 +21,64 @@ static constexpr u64 SYS_READ_CHAR = 8;
 static constexpr u64 SYS_KBD_FOCUS = 9;
 static constexpr u64 SYS_WAIT = 10;
 static constexpr u64 SYS_SLEEP_MS = 11;
+static constexpr u64 SYS_SPAWN = 12;
 static constexpr usize MAX_WRITE_SIZE = 256;
 static constexpr usize MAX_READ_CHAR_SIZE = 256;
 static constexpr usize MAX_SERVICE_NAME = 24;
+static constexpr usize MAX_SPAWN_PATH = 64;
+static constexpr usize MAX_SPAWN_VECTOR = 64;
+static constexpr usize MAX_SPAWN_BYTES = 4096;
+
+struct SpawnCopy {
+    char bytes[MAX_SPAWN_BYTES];
+    usize used;
+    const char* argv[MAX_SPAWN_VECTOR + 1];
+    const char* envp[MAX_SPAWN_VECTOR + 1];
+};
+
+static bool copy_user_string(mm::address_space::AddressSpace& space, vaddr_t source,
+                             char* destination, usize capacity, usize& length) {
+    if (!source) return false;
+    for (usize i = 0; i < capacity; ++i) {
+        char character = 0;
+        if (!mm::address_space::copy_from_user(space, &character, source + i, 1))
+            return false;
+        destination[i] = character;
+        if (!character) {
+            length = i;
+            return true;
+        }
+    }
+    return false;
+}
+
+static bool copy_user_vector(mm::address_space::AddressSpace& space,
+                             vaddr_t user_vector, SpawnCopy& copy,
+                             const char* (&vector)[MAX_SPAWN_VECTOR + 1]) {
+    if (!user_vector) {
+        vector[0] = nullptr;
+        return true;
+    }
+    for (usize count = 0; count <= MAX_SPAWN_VECTOR; ++count) {
+        u64 pointer = 0;
+        if (!mm::address_space::copy_from_user(
+                space, &pointer, user_vector + count * sizeof(u64), sizeof(pointer)))
+            return false;
+        if (!pointer) {
+            vector[count] = nullptr;
+            return true;
+        }
+        if (count == MAX_SPAWN_VECTOR) return false;
+        if (copy.used >= MAX_SPAWN_BYTES) return false;
+        usize length = 0;
+        char* destination = copy.bytes + copy.used;
+        if (!copy_user_string(space, pointer, destination,
+                              MAX_SPAWN_BYTES - copy.used, length)) return false;
+        vector[count] = destination;
+        copy.used += length + 1;
+    }
+    return false;
+}
 
 static bool read_service_name(mm::address_space::AddressSpace* space,
                               Registers* registers, char (&name)[MAX_SERVICE_NAME]) {
@@ -77,6 +134,29 @@ void dispatch(Registers* registers) {
     if (registers->rax == SYS_SLEEP_MS) {
         scheduler::sleep_ms(registers->rdi);
         registers->rax = 0;
+        return;
+    }
+    if (registers->rax == SYS_SPAWN) {
+        if (!space) {
+            registers->rax = static_cast<u64>(-1);
+            return;
+        }
+        auto* copy = static_cast<SpawnCopy*>(mm::heap::kmalloc(sizeof(SpawnCopy)));
+        if (!copy) {
+            registers->rax = static_cast<u64>(-1);
+            return;
+        }
+        copy->used = 0;
+        char path[MAX_SPAWN_PATH];
+        usize path_length = 0;
+        bool ok = copy_user_string(*space, registers->rdi, path, sizeof(path), path_length)
+            && path_length > 0
+            && copy_user_vector(*space, registers->rsi, *copy, copy->argv)
+            && copy_user_vector(*space, registers->rdx, *copy, copy->envp);
+        u32 pid = 0;
+        if (ok) ok = process::spawn(path, copy->argv, copy->envp, pid);
+        mm::heap::kfree(copy);
+        registers->rax = ok ? pid : static_cast<u64>(-1);
         return;
     }
     if (registers->rax == SYS_SERVICE_REGISTER || registers->rax == SYS_SERVICE_CONNECT) {

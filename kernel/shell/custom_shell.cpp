@@ -11,6 +11,7 @@
 #include <mm/address_space.hpp>
 #include <mm/elf_loader.hpp>
 #include <mm/heap.hpp>
+#include <process/process.hpp>
 #include <storage/persistence.hpp>
 #include <test/test.hpp>
 #include <nord/types.hpp>
@@ -112,6 +113,7 @@ static void print_help() {
     kprintf("  put ID \"TEXT\" | add ID \"TEXT\" | get ID\n");
     kprintf("  sync               write the NVMFS snapshot to disk\n");
     kprintf("  kbd-demo           run the keyboard reader demo on demand\n");
+    kprintf("  spawn PATH [ARGS]  load and run an ELF file from NVMFS\n");
     kprintf("  ist-test           overflow the kernel stack to test double-fault IST\n");
     kprintf("  sys | check | ver | reboot | sd | help | cpuid\n");
     kprintf("  ps                 list kernel tasks\n");
@@ -300,6 +302,27 @@ static void command_kbd_demo() {
         kprintf("kbd-demo: exit status=%d\n", status);
 }
 
+static void command_spawn(const TokenList& tokens) {
+    if (tokens.count < 2) { kprintf("usage: spawn PATH [ARGS...]\n"); return; }
+    const char* argv[TOKEN_CAPACITY + 1];
+    for (usize i = 1; i < tokens.count; ++i) argv[i - 1] = tokens.value[i];
+    argv[tokens.count - 1] = nullptr;
+    static const char* const envp[] = {"PATH=/", nullptr};
+    u32 pid = 0;
+    if (!process::spawn(tokens.value[1], argv, envp, pid)) {
+        kprintf("spawn: cannot load %s\n", tokens.value[1]);
+        return;
+    }
+    kprintf("spawned pid=%u\n", pid);
+    i32 status = 0;
+    u32 child = 0;
+    if (!arch::scheduler::wait(static_cast<i32>(pid), status, child)) {
+        kprintf("spawn: wait failed\n");
+        return;
+    }
+    kprintf("spawn: pid=%u exit status=%d\n", child, status);
+}
+
 static void command_sys() {
     u64 nodes, tags, streams, stream_limit, heap_used, heap_capacity;
     nvmfs::stats(nodes, tags, streams, stream_limit);
@@ -469,6 +492,7 @@ static void execute(const char* input) {
     }
     if (equal(command, "sync")) { command_sync(); return; }
     if (equal(command, "kbd-demo")) { command_kbd_demo(); return; }
+    if (equal(command, "spawn")) { command_spawn(tokens); return; }
     if (equal(command, "ist-test")) { command_ist_test(); return; }
     if (equal(command, "test")) {
         if (nord::test::TestSuite::run_all()) {

@@ -53,7 +53,9 @@ USER_ELF := $(BUILD)/user/demo.elf
 USER_OBJ := $(BUILD)/user/demo.elf.o
 KBD_ELF := $(BUILD)/user/kbd_demo.elf
 KBD_OBJ := $(BUILD)/user/kbd_demo.elf.o
-BASE_OBJ := $(CXX_SRC:%.cpp=$(BUILD)/%.o) $(ASM_SRC:%.asm=$(BUILD)/%.o) $(BUILD)/$(FONT_SRC).o $(USER_OBJ) $(KBD_OBJ)
+ARGS_ELF := $(BUILD)/user/args.elf
+ARGS_OBJ := $(BUILD)/user/args.elf.o
+BASE_OBJ := $(CXX_SRC:%.cpp=$(BUILD)/%.o) $(ASM_SRC:%.asm=$(BUILD)/%.o) $(BUILD)/$(FONT_SRC).o $(USER_OBJ) $(KBD_OBJ) $(ARGS_OBJ)
 SYMBOL_SRC := $(BUILD)/generated/kernel_symbols.cpp
 SYMBOL_OBJ := $(BUILD)/generated/kernel_symbols.o
 DEPS    := $(CXX_SRC:%.cpp=$(BUILD)/%.d)
@@ -111,6 +113,14 @@ $(KBD_ELF): $(BUILD)/user/kbd_demo.o user/linker.ld
 	$(LD) $(USER_LDFLAGS) -o $@ $<
 
 $(KBD_OBJ): $(KBD_ELF)
+	@mkdir -p $(dir $@)
+	$(LD) -r -b binary -z noexecstack -o $@ $<
+
+$(ARGS_ELF): $(BUILD)/user/args.o user/linker.ld
+	@mkdir -p $(dir $@)
+	$(LD) $(USER_LDFLAGS) -o $@ $<
+
+$(ARGS_OBJ): $(ARGS_ELF)
 	@mkdir -p $(dir $@)
 	$(LD) -r -b binary -z noexecstack -o $@ $<
 

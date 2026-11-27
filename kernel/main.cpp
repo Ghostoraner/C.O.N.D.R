@@ -16,6 +16,7 @@
 #include <mm/address_space.hpp>
 #include <mm/elf_loader.hpp>
 #include <lib/print.hpp>
+#include <process/process.hpp>
 #include <shell/custom_shell.hpp>
 #include <fs/nvmfs.hpp>
 #include <ipc/ipc.hpp>
@@ -110,6 +111,7 @@ extern "C" [[noreturn]] void kernel_main() {
 
     mm::pmm::init(g_memmap.response, g_hhdm.response->offset);
     mm::heap::init();
+    mm::address_space::set_kernel_root(arch::read_cr3() & 0x000FFFFFFFFFF000ULL);
     nvmfs::init();
     ipc::init();
 
@@ -129,6 +131,7 @@ extern "C" [[noreturn]] void kernel_main() {
     arch::pic::unmask(1);
     arch::sti();
     storage::persistence::init();
+    process::install_builtins();
 
     test_subsystems();
 

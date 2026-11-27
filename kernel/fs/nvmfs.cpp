@@ -227,6 +227,21 @@ bool find(NodeId id, NodeInfo& info) {
     return true;
 }
 
+bool find_name(const char* name, NodeType type, NodeInfo& info) {
+    Lock guard;
+    if (!name) return false;
+    while (*name == '/') ++name;
+    if (!*name) return false;
+    for (usize i = 0; i < g_node_capacity; ++i) {
+        Node* node = g_nodes[i];
+        if (node && node->active && node->type == type && same(node->name, name)) {
+            snapshot(*node, info);
+            return true;
+        }
+    }
+    return false;
+}
+
 bool at(usize active_position, NodeInfo& info) {
     Lock guard;
     for (usize i = 0; i < g_node_capacity; ++i) {

@@ -103,6 +103,10 @@ void set_change_hook(ChangeHook hook);
 bool create(NodeType type, const char* name, NodeId container_id,
             NodeId& result, Error& error);
 bool find(NodeId id, NodeInfo& info);
+// Finds the first active node of `type` whose name matches `name`. A leading
+// '/' is ignored because NVMFS is a flat namespace. As with find(), the
+// returned stream pointer is only valid while a Lock is held.
+bool find_name(const char* name, NodeType type, NodeInfo& info);
 bool at(usize active_position, NodeInfo& info);
 bool directory_at(const Directory& directory, usize& cursor, NodeInfo& info);
 usize count();

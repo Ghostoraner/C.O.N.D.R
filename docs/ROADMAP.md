@@ -8,7 +8,7 @@ This roadmap tracks the progression of **C.O.N.D.R** from a single-core kernel p
 * **Boot & Core Architecture:** Limine boot on `x86_64`, descriptor tables (GDT/IDT/TSS), RSP0 switching, Ring 3 entry, user exception containment, and IST for double-fault handling.
 * **Memory Management:** Bitmap PMM, kernel heap, per-process PML4 page tables with private user mappings and shared supervisor-only kernel mappings, NX page protections, task-stack guard pages, and symbol-resolved panic dumps.
 * **Scheduling & IPC:** Timer-preemptive single-CPU round-robin scheduler (100 Hz PIT tick, 8259 PIC), ready/running/blocked/zombie lifecycle with `exit(status)`/`wait` and full address-space/stack reclamation, task blocking/wakeup, deferred stack reclamation, FPU/SSE state saving, preemption-safe spinlocks, and capability-based IPC with bounded endpoint pairs.
-* **Execution & Storage:** Embedded ELF64 loader, `int 0x80` syscalls, PCI enumeration, legacy VirtIO-blk I/O, and two-slot CRC NVMFS snapshots.
+* **Execution & Storage:** Embedded ELF64 loader, NVMFS-backed `spawn(path, argv, envp)` with a System V AMD64 initial stack, `int 0x80` syscalls, PCI enumeration, legacy VirtIO-blk I/O, and two-slot CRC NVMFS snapshots.
 * **I/O & Tooling:** Framebuffer console, COM1 serial logging, PS/2 keyboard input queue (IRQ1), kernel-mode shell, dynamically sized task/NVMFS tables, and QEMU integration/boundary tests (PMM/heap exhaustion, IPC saturation, snapshot corruption).
 
 ---
@@ -20,7 +20,7 @@ The kernel handles preemption, process isolation, IPC, and double faults, but ca
 | :--- | :--- | :--- |
 | **Scheduling** | Preemptive round-robin, zombie/wait lifecycle, dynamic task table, spinlocks, FPU/SSE, IST | Priorities, `sleep`, signals, SMP |
 | **Memory** | Bitmap PMM, heap, per-process PML4, NX, guard pages | `mmap` / `brk` for user space, copy-on-write |
-| **Programs** | Embedded ELF64 loader, `int 0x80` syscalls, `exit`/`wait` | External ELF loading from disk, `spawn`, `argv`/`envp`, `libc` |
+| **Programs** | Embedded ELF64 loader, NVMFS-backed `spawn` with `argv`/`envp`, `int 0x80` syscalls, `exit`/`wait` | External `/bin` programs, path hierarchy, `libc`, file descriptors |
 | **Files** | Flat NVMFS object/tag registry, 2-slot CRC snapshots | Path hierarchy, VFS, file descriptors, permissions, large files |
 | **I/O** | PS/2 keyboard, framebuffer console, serial port | TTY with line editing, pipes, redirection, scrollback, USB keyboard |
 | **Shell** | Kernel-mode shell with built-in commands | User-space shell (`/bin/sh`), core utilities (`ls`, `cat`, `cp`, editor), scripting |
@@ -51,7 +51,7 @@ Minimum viable **CLI-OS** is complete at **Gate 5**. Phases 6 and 7 are post-CLI
 - [x] Process lifecycle: `ready`, `running`, `blocked`, `zombie` states; `exit(status)` and `wait`/`waitpid`; full PML4, page, and kernel stack reclamation.
 - [x] Configurable dynamic task table (list or slab allocator).
 - [x] Blocking calls: `ipc_receive`, `read_char`, and `sleep_ms` transition tasks to `blocked` and wake via IRQ/IPC rather than busy-waiting.
-- [ ] `spawn(path, argv, envp)`: load ELF from storage and initialize user stack per System V ABI.
+- [x] `spawn(path, argv, envp)`: load ELF from storage and initialize user stack per System V ABI.
 - [ ] User memory: `brk`/`mmap` (anonymous pages) and safe pointer validation (`copy_from_user`/`copy_to_user`) with page-fault handling.
 - [ ] Per-process file descriptor table: `open`, `close`, `read`, `write`, `dup` (backing `stdin`/`stdout`/`stderr`).
 - [ ] Migrate from `int 0x80` to `syscall`/`sysret` (`MSR_STAR`/`MSR_LSTAR`), keeping `int 0x80` temporarily during migration.

@@ -10,6 +10,7 @@
 #include <mm/heap.hpp>
 #include <mm/pmm.hpp>
 #include <mm/task_stack.hpp>
+#include <process/process.hpp>
 #include <storage/persistence.hpp>
 
 namespace nord::test {
@@ -298,6 +299,39 @@ static bool process_lifecycle(usize) {
     if (!lifecycle_cycle(after_second)) return false;
     if (count() != tasks_before) return false;
     return baseline == after_first && after_first == after_second;
+}
+
+// spawn() loads an ELF stream from NVMFS and builds a System V initial stack.
+// The args program prints argv/envp and exits with argc, so status == 3 proves
+// the pointer arrays were laid out correctly. Repeated cycles must not leak
+// physical pages.
+static bool process_spawn_argv(usize) {
+    using nord::arch::scheduler::current_id;
+    using nord::arch::scheduler::wait;
+
+    if (current_id() == 0) return true;
+    process::install_builtins();
+
+    const char* argv[] = {"args", "hello", "world", nullptr};
+    const char* envp[] = {"MODE=test", nullptr};
+
+    u32 pid = 0;
+    if (!process::spawn("args", argv, envp, pid) || !pid) return false;
+    i32 status = -1;
+    u32 child = 0;
+    if (!wait(static_cast<i32>(pid), status, child) || child != pid || status != 3)
+        return false;
+
+    u32 missing = 0;
+    if (process::spawn("no-such-elf", argv, envp, missing)) return false;
+
+    const u64 baseline = mm::pmm::used_bytes();
+    for (usize i = 0; i < 2; ++i) {
+        if (!process::spawn("args", argv, envp, pid)) return false;
+        if (!wait(static_cast<i32>(pid), status, child) || child != pid || status != 3)
+            return false;
+    }
+    return mm::pmm::used_bytes() == baseline;
 }
 
 namespace {
@@ -824,6 +858,7 @@ static bool register_once = []() -> bool {
     TestSuite::register_test("scheduler_switch_count", 5, &scheduler_switch_count);
     TestSuite::register_test("scheduler_many_tasks", 1, &scheduler_many_tasks);
     TestSuite::register_test("process_lifecycle", 2, &process_lifecycle);
+    TestSuite::register_test("process_spawn_argv", 1, &process_spawn_argv);
     TestSuite::register_test("scheduler_sleep_wake", 2, &scheduler_sleep_wake);
     TestSuite::register_test("ipc_blocking_receive", 1, &ipc_blocking_receive);
     TestSuite::register_test("nvmfs_node_capacity", 1, &nvmfs_node_capacity);
