@@ -16,8 +16,9 @@ bool load(address_space::AddressSpace& space, const u8* image, usize image_size,
 bool load_demo(address_space::AddressSpace& space, u64& entry, u64& stack_pointer);
 bool load_kbd_demo(address_space::AddressSpace& space, u64& entry, u64& stack_pointer);
 
-// Built-in user program embedded into the kernel image. `install_builtins`
-// copies it into NVMFS so it can be spawned through the normal storage path.
+// Built-in user programs embedded into the kernel image. `install_builtins`
+// copies them into NVMFS so they can be spawned through the normal storage path.
 const u8* args_image(usize& size);
+const u8* mem_image(usize& size);
 
 }

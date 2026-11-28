@@ -19,7 +19,7 @@ The kernel handles preemption, process isolation, IPC, and double faults, but ca
 | Layer | Current State | Missing for CLI-OS |
 | :--- | :--- | :--- |
 | **Scheduling** | Preemptive round-robin, zombie/wait lifecycle, dynamic task table, spinlocks, FPU/SSE, IST | Priorities, `sleep`, signals, SMP |
-| **Memory** | Bitmap PMM, heap, per-process PML4, NX, guard pages | `mmap` / `brk` for user space, copy-on-write |
+| **Memory** | Bitmap PMM, heap, per-process PML4, NX, guard pages, demand-paged `brk`/`mmap`, fault-safe user copies | copy-on-write |
 | **Programs** | Embedded ELF64 loader, NVMFS-backed `spawn` with `argv`/`envp`, `int 0x80` syscalls, `exit`/`wait` | External `/bin` programs, path hierarchy, `libc`, file descriptors |
 | **Files** | Flat NVMFS object/tag registry, 2-slot CRC snapshots | Path hierarchy, VFS, file descriptors, permissions, large files |
 | **I/O** | PS/2 keyboard, framebuffer console, serial port | TTY with line editing, pipes, redirection, scrollback, USB keyboard |
@@ -52,7 +52,7 @@ Minimum viable **CLI-OS** is complete at **Gate 5**. Phases 6 and 7 are post-CLI
 - [x] Configurable dynamic task table (list or slab allocator).
 - [x] Blocking calls: `ipc_receive`, `read_char`, and `sleep_ms` transition tasks to `blocked` and wake via IRQ/IPC rather than busy-waiting.
 - [x] `spawn(path, argv, envp)`: load ELF from storage and initialize user stack per System V ABI.
-- [ ] User memory: `brk`/`mmap` (anonymous pages) and safe pointer validation (`copy_from_user`/`copy_to_user`) with page-fault handling.
+- [x] User memory: `brk`/`mmap` (anonymous pages) and safe pointer validation (`copy_from_user`/`copy_to_user`) with page-fault handling.
 - [ ] Per-process file descriptor table: `open`, `close`, `read`, `write`, `dup` (backing `stdin`/`stdout`/`stderr`).
 - [ ] Migrate from `int 0x80` to `syscall`/`sysret` (`MSR_STAR`/`MSR_LSTAR`), keeping `int 0x80` temporarily during migration.
 - [ ] Minimal signals: `kill` and `Ctrl+C` termination for foreground processes.

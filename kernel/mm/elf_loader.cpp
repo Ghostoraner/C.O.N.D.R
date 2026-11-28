@@ -65,6 +65,8 @@ extern "C" const u8 _binary_build_user_kbd_demo_elf_start[];
 extern "C" const u8 _binary_build_user_kbd_demo_elf_end[];
 extern "C" const u8 _binary_build_user_args_elf_start[];
 extern "C" const u8 _binary_build_user_args_elf_end[];
+extern "C" const u8 _binary_build_user_mem_elf_start[];
+extern "C" const u8 _binary_build_user_mem_elf_end[];
 
 static bool fits(u64 offset, u64 length, u64 total) {
     return offset <= total && length <= total - offset;
@@ -168,6 +170,7 @@ static bool load_image(const u8* image, usize image_size,
         return false;
     const u64 load_bias = space.user_base - ELF_LINK_BASE;
     bool loaded_segment = false;
+    u64 loaded_end = 0;
     for (u16 i = 0; i < header->program_header_count; ++i) {
         const auto* program = reinterpret_cast<const ProgramHeader*>(
             image + header->program_header_offset + static_cast<u64>(i) * sizeof(ProgramHeader));
@@ -184,18 +187,27 @@ static bool load_image(const u8* image, usize image_size,
         const u64 page_end = align_up(segment_end, PAGE_SIZE);
         const bool writable = (program->flags & PF_W) != 0;
         const bool executable = (program->flags & PF_X) != 0;
+        // Map writable while the segment is being populated, then apply the
+        // ELF permissions. This keeps copy_to_user() strict about write
+        // access without requiring a separate loader-only copy primitive.
         for (u64 page = page_start; page < page_end; page += PAGE_SIZE) {
-            if (!address_space::allocate_page(space, page, writable, executable))
+            if (!address_space::allocate_page(space, page, true, executable))
                 return false;
         }
         if (program->file_size && !address_space::copy_to_user(
                 space, segment_address, image + program->offset, program->file_size))
             return false;
+        for (u64 page = page_start; page < page_end; page += PAGE_SIZE) {
+            if (!address_space::protect_page(space, page, writable, executable))
+                return false;
+        }
+        if (page_end > loaded_end) loaded_end = page_end;
         loaded_segment = true;
     }
 
+    if (!loaded_segment || !address_space::set_brk_start(space, loaded_end)) return false;
     entry = header->entry + load_bias;
-    if (!loaded_segment || !address_space::contains(space, entry, 1)) return false;
+    if (!address_space::contains(space, entry, 1)) return false;
     const u64 stack_top = space.user_base + USER_STACK_OFFSET;
     const u64 stack_base = stack_top - USER_STACK_SIZE;
     // The page just below the stack stays unmapped and acts as a guard: an
@@ -236,6 +248,12 @@ const u8* args_image(usize& size) {
     size = static_cast<usize>(_binary_build_user_args_elf_end
         - _binary_build_user_args_elf_start);
     return _binary_build_user_args_elf_start;
+}
+
+const u8* mem_image(usize& size) {
+    size = static_cast<usize>(_binary_build_user_mem_elf_end
+        - _binary_build_user_mem_elf_start);
+    return _binary_build_user_mem_elf_start;
 }
 
 } // namespace nord::mm::elf_loader

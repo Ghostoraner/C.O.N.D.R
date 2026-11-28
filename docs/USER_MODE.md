@@ -37,6 +37,8 @@ User programs invoke `int 0x80` with the syscall number in `RAX`:
 | `10` | `wait` | `RDI` child pid (`<= 0` waits for any child), `RSI` user `i32` status output | child pid, `-1` invalid status pointer, `-10` no matching child |
 | `11` | `sleep_ms` | `RDI` milliseconds | `0` after the timer wakeup |
 | `12` | `spawn` | `RDI` path, `RSI` argv, `RDX` envp (NULL-terminated user arrays) | child pid, or `-1` |
+| `13` | `brk` | `RDI` new program break (`0` queries it) | new break, or `-1` |
+| `14` | `mmap` | `RDI` address hint, `RSI` length, `RDX` `PROT_*`, `R10` flags | mapping address, or `-1` |
 
 ## Spawning programs
 
@@ -61,6 +63,29 @@ boot; `spawn args alpha beta` prints the argument and environment strings and
 exits with `argc` as its status. The console command `spawn PATH [ARGS...]`
 waits for the child and prints its exit status.
 
+## User memory
+
+Each address space owns a private PML4 slot. The ELF image and the initial
+stack occupy the bottom of the slot; above them the kernel reserves a `brk`
+heap followed by an anonymous `mmap` region. Both regions are demand-paged:
+the kernel records the range and permissions, and the first access to a page
+raises `#PF`, which allocates a zero-filled page and retries the instruction.
+
+`brk` moves the program break within `[brk_start, brk_limit]`. `brk(0)` returns
+the current break. Growing the break only extends the range; shrinking it
+unmaps and frees the pages above the new break. `mmap` allocates anonymous
+pages only: `PROT_WRITE` (`2`) and `PROT_EXEC` (`4`) are honored, the address
+hint and flags are accepted for ABI compatibility, and `fd`/`offset` are not
+used. `mmap(length)` with the length in `RDI` and a zero `RSI` is also accepted.
+Both calls return `-1` when the request lies outside the process slot.
+
+`copy_from_user` and `copy_to_user` validate every page before touching it,
+resolve demand-zero pages through the same fault path, enforce write access for
+`copy_to_user`, and reject kernel or unmapped addresses. A bad user pointer
+therefore returns an error instead of faulting the kernel. A real Ring 3 fault
+outside a recorded anonymous range terminates the task; kernel-mode faults
+still panic.
+
 ## Process lifecycle
 
 A task moves through `ready`, `running`, `blocked` and `zombie` states. `exit`
@@ -84,9 +109,9 @@ own client endpoint, and each `service_accept` creates a matching server
 endpoint, so every connection has a private pair of bounded eight-message
 queues. Multiple clients can therefore talk to one service without sharing a
 channel. The demo connects to its own `echo` service to exercise the
-request/reply path. There are no file, pathname, or memory-management syscalls;
-`spawn` accepts a flat NVMFS node name. This code is not a security boundary
-suitable for untrusted software.
+request/reply path. There are no file or pathname syscalls; `spawn` accepts a
+flat NVMFS node name, and user memory is managed through `brk`/`mmap` only.
+This code is not a security boundary suitable for untrusted software.
 
 ## Keyboard input
 

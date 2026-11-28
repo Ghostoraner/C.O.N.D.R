@@ -824,6 +824,99 @@ static bool address_space_copy_invalid(usize) {
     return true;
 }
 
+static bool address_space_user_memory(usize) {
+    using namespace nord::mm::address_space;
+
+    AddressSpace space;
+    if (!create(space)) return false;
+    bool ok = true;
+
+    vaddr_t base = 0;
+    if (!brk(space, 0, base) || base < space.brk_start) {
+        destroy(space);
+        return false;
+    }
+
+    vaddr_t grown = 0;
+    if (!brk(space, base + 3 * PAGE_SIZE, grown) || grown < base + 3 * PAGE_SIZE)
+        ok = false;
+
+    if (ok) {
+        u64 value = ~static_cast<u64>(0);
+        if (!copy_from_user(space, &value, base, sizeof(value)) || value != 0)
+            ok = false;
+        const u64 pattern = 0x1122334455667788ULL;
+        if (!copy_to_user(space, base + 2 * PAGE_SIZE, &pattern, sizeof(pattern)))
+            ok = false;
+        value = 0;
+        if (!copy_from_user(space, &value, base + 2 * PAGE_SIZE, sizeof(value))
+            || value != pattern)
+            ok = false;
+    }
+
+    // Shrinking the break unmaps and frees the pages above the new break.
+    vaddr_t shrunk = 0;
+    if (!brk(space, base, shrunk) || shrunk != base) ok = false;
+    if (contains(space, base, 1)) ok = false;
+
+    vaddr_t ignored = 0;
+    if (brk(space, space.user_base, ignored)) ok = false;
+    if (brk(space, space.mmap_limit + PAGE_SIZE, ignored)) ok = false;
+
+    vaddr_t mapping = 0;
+    if (!mmap(space, 0, 2 * PAGE_SIZE, 3, 0x22, mapping)) {
+        ok = false;
+    } else {
+        if (mapping < space.mmap_base || (mapping & (PAGE_SIZE - 1))) ok = false;
+        u64 value = ~static_cast<u64>(0);
+        if (!copy_from_user(space, &value, mapping, sizeof(value)) || value != 0)
+            ok = false;
+        const u64 pattern = 0xDEADBEEFCAFEBABEULL;
+        if (!copy_to_user(space, mapping + PAGE_SIZE, &pattern, sizeof(pattern)))
+            ok = false;
+        value = 0;
+        if (!copy_from_user(space, &value, mapping + PAGE_SIZE, sizeof(value))
+            || value != pattern)
+            ok = false;
+    }
+
+    vaddr_t second = 0;
+    if (!mmap(space, 0, PAGE_SIZE, 3, 0x22, second) || second == mapping)
+        ok = false;
+    if (mmap(space, 0, 0, 3, 0x22, second)) ok = false;
+    if (mmap(space, 0, space.user_limit, 3, 0x22, second)) ok = false;
+
+    // A read-only anonymous mapping can be read but not written through the
+    // user-copy helpers.
+    vaddr_t read_only = 0;
+    if (!mmap(space, 0, PAGE_SIZE, 1, 0x22, read_only)) {
+        ok = false;
+    } else {
+        u64 value = ~static_cast<u64>(0);
+        if (!copy_from_user(space, &value, read_only, sizeof(value)) || value != 0)
+            ok = false;
+        value = 1;
+        if (copy_to_user(space, read_only, &value, sizeof(value))) ok = false;
+    }
+
+    // A user page fault materializes a fresh anonymous page; an address
+    // outside every region is rejected.
+    vaddr_t faulted = 0;
+    if (!mmap(space, 0, 2 * PAGE_SIZE, 3, 0x22, faulted)) {
+        ok = false;
+    } else {
+        if (!handle_fault(space, faulted + PAGE_SIZE, true)) ok = false;
+        u64 value = ~static_cast<u64>(0);
+        if (!copy_from_user(space, &value, faulted + PAGE_SIZE, sizeof(value))
+            || value != 0)
+            ok = false;
+    }
+    if (handle_fault(space, space.user_base + 0x2000, true)) ok = false;
+
+    destroy(space);
+    return ok;
+}
+
 namespace {
 
 // Setting RSP to an invalid value makes the CPU fault while trying to push
@@ -870,6 +963,7 @@ static bool register_once = []() -> bool {
     TestSuite::register_test("keyboard_focus_rules", 3, &keyboard_focus_rules);
     TestSuite::register_test("keyboard_read_char_blocking", 2, &keyboard_read_char_blocking);
     TestSuite::register_test("address_space_copy_invalid", 3, &address_space_copy_invalid);
+    TestSuite::register_test("address_space_user_memory", 2, &address_space_user_memory);
     g_tests_registered = true;
     return true;
 }();

@@ -22,6 +22,8 @@ static constexpr u64 SYS_KBD_FOCUS = 9;
 static constexpr u64 SYS_WAIT = 10;
 static constexpr u64 SYS_SLEEP_MS = 11;
 static constexpr u64 SYS_SPAWN = 12;
+static constexpr u64 SYS_BRK = 13;
+static constexpr u64 SYS_MMAP = 14;
 static constexpr usize MAX_WRITE_SIZE = 256;
 static constexpr usize MAX_READ_CHAR_SIZE = 256;
 static constexpr usize MAX_SERVICE_NAME = 24;
@@ -109,6 +111,38 @@ void dispatch(Registers* registers) {
         return;
     }
     auto* space = scheduler::current_address_space();
+    if (registers->rax == SYS_BRK) {
+        vaddr_t result = 0;
+        if (!space || !mm::address_space::brk(*space, registers->rdi, result)) {
+            registers->rax = static_cast<u64>(-1);
+            return;
+        }
+        registers->rax = result;
+        return;
+    }
+    if (registers->rax == SYS_MMAP) {
+        if (!space) {
+            registers->rax = static_cast<u64>(-1);
+            return;
+        }
+        // Standard argument order is addr, length, prot, flags. A bare
+        // mmap(length) call (length in RDI, zero RSI) is also accepted.
+        vaddr_t hint = registers->rdi;
+        usize length = registers->rsi;
+        if (!length && hint) {
+            length = hint;
+            hint = 0;
+        }
+        vaddr_t result = 0;
+        if (!mm::address_space::mmap(*space, hint, length,
+                                     static_cast<u32>(registers->rdx),
+                                     static_cast<u32>(registers->r10), result)) {
+            registers->rax = static_cast<u64>(-1);
+            return;
+        }
+        registers->rax = result;
+        return;
+    }
     if (registers->rax == SYS_WAIT) {
         const vaddr_t status_out = registers->rsi;
         i32 status = 0;

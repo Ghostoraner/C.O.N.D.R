@@ -4,6 +4,7 @@
 #include <arch/x86_64/cpu/syscall.hpp>
 #include <arch/x86_64/io.hpp>
 #include <lib/print.hpp>
+#include <mm/address_space.hpp>
 
 namespace nord::arch {
 
@@ -36,6 +37,18 @@ extern "C" Registers* isr_dispatch(Registers* r) {
     }
     if (r->vector < 32) {
         if (r->vector == 3 && idt::handler_for(3)) return r;
+        // Demand paging: a not-present fault inside a brk/mmap region is
+        // resolved by materializing a zero-filled page and retrying the
+        // instruction. Protection faults and addresses outside the recorded
+        // anonymous regions still terminate the task (or panic in kernel).
+        if (r->vector == 14) {
+            auto* space = scheduler::current_address_space();
+            const u64 address = read_cr2();
+            const u64 error = r->error_code;
+            if (space && !(error & 1)
+                && mm::address_space::handle_fault(*space, address, (error & 2) != 0))
+                return r;
+        }
         if ((r->cs & 3) == 3) {
             kprintf("[user] task fault vector=%lu rip=%p\n", r->vector, (void*)r->rip);
             scheduler::mark_current_exited(static_cast<i32>(128 + r->vector));

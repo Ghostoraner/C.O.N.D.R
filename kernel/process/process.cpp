@@ -85,13 +85,19 @@ static bool install_file(const char* name, const u8* image, usize size, bool& cr
     return true;
 }
 
+static void install_builtin(const char* name, const u8* image, usize size) {
+    if (!image || !size) return;
+    bool created = false;
+    if (!install_file(name, image, size, created)) return;
+    if (created) kprintf("[spawn] installed built-in '%s' (%lu bytes)\n", name, size);
+}
+
 void install_builtins() {
     usize size = 0;
     const u8* image = mm::elf_loader::args_image(size);
-    if (!image || !size) return;
-    bool created = false;
-    if (!install_file("args", image, size, created)) return;
-    if (created) kprintf("[spawn] installed built-in 'args' (%lu bytes)\n", size);
+    install_builtin("args", image, size);
+    image = mm::elf_loader::mem_image(size);
+    install_builtin("mem", image, size);
 }
 
 }

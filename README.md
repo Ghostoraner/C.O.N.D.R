@@ -41,6 +41,8 @@ and UEFI systems.
 
 - NX page protections for user data/stack pages, plus guard pages below kernel and user task stacks
 
+- Demand-paged user memory: `brk` and anonymous `mmap` backed by a Ring 3 page-fault handler, with fault-safe `copy_from_user`/`copy_to_user` validation
+
 - Stable exception reports with register dumps, frame-pointer call stacks, and ELF symbol lookup
 
 - Physical page allocator, kernel heap, and virtual memory management
@@ -61,7 +63,7 @@ and UEFI systems.
 
 - Two-slot NVMFS snapshot mechanism with CRC persistence over block devices
 
-- Kernel-level automated unit testing framework (`kernel/test/`) covering PMM and heap boundary cases, address spaces, scheduler growth and blocking sleep, process lifecycle and reclamation, NVMFS registry growth, IPC queue saturation and blocking receive, snapshot corruption rejection, keyboard queue, scalable waiter list, full `read_char` block/wake cycle and focus rules
+- Kernel-level automated unit testing framework (`kernel/test/`) covering PMM and heap boundary cases, address spaces and `brk`/`mmap` demand paging, scheduler growth and blocking sleep, process lifecycle and reclamation, NVMFS registry growth, IPC queue saturation and blocking receive, snapshot corruption rejection, keyboard queue, scalable waiter list, full `read_char` block/wake cycle and focus rules
 
 - Freestanding command tokenizer with quoted arguments
 
@@ -164,6 +166,8 @@ User programs enter the kernel with `int 0x80`. The number goes in `RAX`.
 | 10 | `wait` | Wait for a child (`RDI` pid, `<= 0` for any) and collect its status |
 | 11 | `sleep_ms` | Sleep for `RDI` milliseconds, waking on a PIT tick |
 | 12 | `spawn` | Load an ELF file from NVMFS (`RDI` path, `RSI` argv, `RDX` envp) and return the child pid |
+| 13 | `brk` | Set the program break (`RDI`; `0` queries it) |
+| 14 | `mmap` | Create anonymous demand-zero pages (`RDI` hint, `RSI` length, `RDX` prot, `R10` flags) |
 
 `exit` leaves a zombie record until the parent calls `wait`, which reclaims the
 child's address space, pages, kernel stack and task record. Tasks with no living
@@ -176,6 +180,14 @@ or a PIT deadline expires; no syscall busy-waits for its wakeup.
 `spawn` loads an ELF64 file from a flat NVMFS name and returns the child pid.
 The kernel builds the System V AMD64 initial stack (`argc`, `argv`, `envp`, and
 an auxv ending in `AT_NULL`) before entering Ring 3.
+
+`brk` and `mmap` manage a private demand-paged user region. The first access to
+a page raises a page fault; the kernel allocates a zero-filled page, applies the
+mapping permissions and retries the instruction. `copy_from_user` and
+`copy_to_user` walk the current address space, resolve demand-zero pages and
+enforce write access, so an invalid pointer returns an error instead of
+faulting the kernel. The built-in `mem` program exercises this path; run it with
+`spawn mem`.
 
 The `kbd-demo` program (`user/kbd_demo.asm`) shows the flow: it takes focus,
 reads five characters, echoes them, and returns focus to the console. It is not
@@ -232,6 +244,7 @@ x86, написанная на freestanding C++23 и NASM. Загружаетс�
 * Пользовательские задачи Ring 3 с собственными адресными пространствами и загрузчиком ELF64
 * Поддержка `spawn(path, argv, envp)`: загрузка ELF64 из NVMFS и построение начального стека System V AMD64 с argv, envp и auxiliary vector
 * NX-защита страниц данных и стека, guard-страницы под стеками задач ядра и пользователя
+* Пользовательская память по требованию: `brk` и анонимный `mmap` через обработчик page fault Ring 3, плюс безопасная проверка `copy_from_user`/`copy_to_user`
 * Стабильные отчёты об исключениях: дамп регистров, стек вызовов по frame pointer и имена функций из таблицы символов ELF
 * Физический аллокатор страниц, куча ядра и управление виртуальной памятью
 * Framebuffer Limine 32 bpp со шрифтом консоли 12x22
@@ -244,7 +257,7 @@ x86, написанная на freestanding C++23 и NASM. Загружаетс�
 * Спинлоки с отключением вытеснения вокруг PMM, NVMFS и состояния IPC; каждое IPC-соединение получает собственную пару endpoint'ов
 * Абстракция блочных устройств (`BlockDevice`) с регистрацией драйвера VirtIO-blk
 * Двухслотовый механизм снапшотов NVMFS с защитой CRC поверх блочного слоя
-* Модуль автоматического юнит-тестирования ядра (`kernel/test/`) для граничных случаев PMM и кучи, адресных пространств, роста планировщика и блокирующего сна, жизненного цикла и освобождения процессов, роста NVMFS, переполнения очередей IPC и блокирующего приёма, отказа от повреждённых снапшотов, очереди клавиатуры, масштабируемого списка ожидания, полного цикла блокировки/пробуждения `read_char` и правил фокуса
+* Модуль автоматического юнит-тестирования ядра (`kernel/test/`) для граничных случаев PMM и кучи, адресных пространств и demand paging `brk`/`mmap`, роста планировщика и блокирующего сна, жизненного цикла и освобождения процессов, роста NVMFS, переполнения очередей IPC и блокирующего приёма, отказа от повреждённых снапшотов, очереди клавиатуры, масштабируемого списка ожидания, полного цикла блокировки/пробуждения `read_char` и правил фокуса
 * Freestanding-токенизатор команд с поддержкой аргументов в кавычках
 
 ## Сборка и запуск
@@ -344,6 +357,8 @@ User-программы входят в ядро через `int 0x80`. Номе
 | 10 | `wait` | Ждать дочернюю задачу (`RDI` pid, `<= 0` — любую) и получить статус |
 | 11 | `sleep_ms` | Спать `RDI` миллисекунд, просыпаясь по тику PIT |
 | 12 | `spawn` | Загрузить ELF из NVMFS (`RDI` путь, `RSI` argv, `RDX` envp) и вернуть pid ребёнка |
+| 13 | `brk` | Установить границу программы (`RDI`; `0` — запрос текущей) |
+| 14 | `mmap` | Создать анонимные страницы по требованию (`RDI` подсказка, `RSI` длина, `RDX` prot, `R10` flags) |
 
 `exit` оставляет zombie-запись, пока родитель не вызовет `wait`; тот освобождает
 адресное пространство, страницы, стек ядра и запись задачи. Задачи без живого
@@ -356,6 +371,14 @@ User-программы входят в ядро через `int 0x80`. Номе
 `spawn` загружает ELF64 из плоского имени NVMFS и возвращает pid ребёнка. Ядро
 строит начальный стек System V AMD64 (`argc`, `argv`, `envp` и auxv с
 терминатором `AT_NULL`) перед переходом в Ring 3.
+
+`brk` и `mmap` управляют приватной пользовательской памятью по требованию.
+Первое обращение к странице вызывает page fault; ядро выделяет заполненную
+нулями страницу, применяет права отображения и повторяет инструкцию.
+`copy_from_user` и `copy_to_user` обходят адресное пространство, материализуют
+страницы `brk`/`mmap` и проверяют право записи, поэтому неверный указатель
+возвращает ошибку, а не роняет ядро. Встроенная программа `mem` проверяет этот
+путь; запусти её командой `spawn mem`.
 
 Программа `kbd-demo` (`user/kbd_demo.asm`) показывает весь сценарий: берёт
 фокус, читает пять символов, повторяет их и возвращает фокус консоли. Она не

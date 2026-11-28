@@ -140,6 +140,14 @@ def main():
                 if expected not in spawn_log:
                     raise RuntimeError(f"spawn lost initial-stack entry {expected!r}\n{spawn_log}")
 
+            # Syscalls 13/14 coverage: the mem program grows the brk heap and
+            # touches anonymous mmap pages, which exercises the user page-fault
+            # path, then exits with status 0.
+            send_line(monitor, "spawn mem")
+            mem_log = wait_for_log(process, log, "C.O.N.D.R user memory: brk/mmap ok")
+            if "exit status=0" not in mem_log:
+                raise RuntimeError(f"user brk/mmap program failed\n{mem_log}")
+
             # Syscall 8 coverage: launch the keyboard demo on demand. It takes
             # focus, reads five characters one at a time and echoes them back.
             send_line(monitor, "kbd-demo")
